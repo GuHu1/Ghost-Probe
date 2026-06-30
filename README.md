@@ -1,2 +1,4 @@
 # Ghost-Probe
 OSZ文件是得到阴影遮挡区的最小模拟，测试已经通过，请注意OSZ代码中的BEV格子大小要与最终实现Phantom Agent预测的方法中大小相同
+preprocess是用于在nuscenes上寻找Phantom Agent的数据处理代码，目前已经在nuscenes v1.0-mini版本测试成功，不过需要更改其寻找逻辑，只将车辆类型的目标标注为真值
+filter是其他AI给出的代码，目前已经忘记是什么作用，需要验证其目标和可用性
