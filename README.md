@@ -1,1 +1,2 @@
 # Ghost-Probe
+OSZ文件是得到阴影遮挡区的最小模拟，测试已经通过，请注意OSZ代码中的BEV格子大小要与最终实现Phantom Agent预测的方法中大小相同
