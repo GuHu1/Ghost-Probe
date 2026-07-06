@@ -78,7 +78,7 @@ def main():
     parser.add_argument('--version',  default='v1.0-mini')
     parser.add_argument('--sample_idx', type=int, default=0,
                         help='Which sample index to visualize (0-based)')
-    parser.add_argument('--outdir', default=str(_REPO_ROOT / 'filter' / 'output'))
+    parser.add_argument('--outdir', default=str(_REPO_ROOT / 'PA_gen_v2' / 'output'))
     args = parser.parse_args()
 
     from nuscenes.nuscenes import NuScenes
