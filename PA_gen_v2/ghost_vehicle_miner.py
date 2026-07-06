@@ -442,7 +442,7 @@ if __name__ == '__main__':
                         help='Path to nuScenes dataset root '
                              '(e.g. /data/sets/nuscenes)')
     parser.add_argument('--version',  default='v1.0-mini')
-    parser.add_argument('--out',      default=str(_REPO_ROOT / 'filter' /
+    parser.add_argument('--out',      default=str(_REPO_ROOT / 'PA_gen_v2' /
                                                    'output' / 'ghost_events_mini.json'))
     parser.add_argument('--lookback', type=int, default=LOOKBACK_FRAMES)
     parser.add_argument('--min_osz',  type=int, default=MIN_OSZ_OVERLAP)
