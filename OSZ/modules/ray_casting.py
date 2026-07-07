@@ -10,7 +10,7 @@ For each camera:
 """
 
 import numpy as np
-from typing import Tuple, Dict
+from typing import Tuple
 
 
 def build_bev_occ_from_voxel_cast(

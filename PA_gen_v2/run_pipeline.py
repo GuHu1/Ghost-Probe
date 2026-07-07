@@ -99,7 +99,7 @@ def main():
           '--out_neg', str(out_dir / 'events_negative.png')]),
     ]
 
-    print(f"\nGhost-Probe — Ghost Vehicle Mining Pipeline")
+    print("\nGhost-Probe — Ghost Vehicle Mining Pipeline")
     print(f"  dataroot : {args.dataroot}")
     print(f"  version  : {args.version}")
     print(f"  output   : {out_dir}")
@@ -114,7 +114,7 @@ def main():
     print("  Pipeline complete. Check these outputs:")
     print(f"  {out_dir / 'osz_sample_viz.png'}     ← OSZ geometry + GT agreement check")
     print(f"  {out_dir / 'events_positive.png'}    ← Ghost events (should show")
-    print(f"                                          red dots inside red OSZ)")
+    print("                                          red dots inside red OSZ)")
     print(f"  {out_dir / 'events_negative.png'}    ← Negatives (should be blue-only)")
     print(f"  {events_path}      ← Raw event data")
     print(f"{'━'*60}\n")

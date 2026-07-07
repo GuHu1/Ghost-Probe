@@ -1,0 +1,27 @@
+# Ghost-Probe — Python dependencies
+#
+# Install core + nuScenes:
+#   pip install -r requirements.txt
+#
+# If you only need geometric OSZ / PA mining (no HD-map filter, no CNN):
+#   pip install numpy matplotlib scipy Pillow tqdm pyquaternion nuscenes-devkit
+#
+# The optional packages below are only required by specific modules.
+
+# Core (required by all modules)
+numpy
+matplotlib
+scipy
+Pillow
+tqdm
+pyquaternion
+
+# nuScenes dataset API
+nuscenes-devkit
+
+# Optional: HD-map drivable-area filter (OSZ/modules/drivable_filter.py,
+# PA_gen_v2/osz_source.py)
+shapely
+
+# Optional: CNN refinement (OSZ/modules/crf_refine.py, OSZ/run_osz_pipeline.py --train_cnn)
+torch

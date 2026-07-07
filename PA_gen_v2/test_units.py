@@ -39,7 +39,7 @@ for _p in (str(_REPO_ROOT), str(_THIS_DIR)):
 
 import osz_source
 from ghost_vehicle_miner import _global_to_ego
-from trajectory import build_instance_trajectories, locate_at_time, KNOWN, INTERPOLATED, NO_EVIDENCE
+from trajectory import locate_at_time, KNOWN, INTERPOLATED, NO_EVIDENCE
 from OSZ.modules.ray_casting import cast_osz_2d
 from common import bev_config
 
@@ -104,11 +104,11 @@ def test_osz_single_occluder_symmetric():
 
     shadow_i, shadow_j = osz_source.bev_xy_to_ij(12.0, 0.0)
     assert osz[shadow_i, shadow_j], \
-        f"Cell at x=12m,y=0m should be in OSZ (behind wall at x=10m)"
+        "Cell at x=12m,y=0m should be in OSZ (behind wall at x=10m)"
 
     front_i, front_j = osz_source.bev_xy_to_ij(5.0, 0.0)
     assert not osz[front_i, front_j], \
-        f"Cell at x=5m,y=0m should be visible (in front of wall)"
+        "Cell at x=5m,y=0m should be visible (in front of wall)"
 
 
 # ── Test: (i,j) axis order regression — the transpose bug this repo hit ──

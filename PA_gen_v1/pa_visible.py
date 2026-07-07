@@ -9,7 +9,7 @@ pa_filter_v2.py — Version B：直接可视化 NuScenes 遮挡标注
   → 显示当前帧的 visibility / 速度 / 类别
 
 输出：
-  /data/jhc/test/
+  OUTDIR_BASE/
     occluded_vis/          ← 可视化图片
     occluded_labels.pkl    ← {sample_token: [label_dict]}
     occluded_tokens.txt
@@ -27,7 +27,6 @@ from nuscenes.utils.geometry_utils import view_points
 import matplotlib
 matplotlib.use('Agg')  # 无显示器环境必须在 import pyplot 前设置
 import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 from matplotlib.lines import Line2D
 import matplotlib.font_manager as _fm
 
@@ -43,9 +42,10 @@ else:
 matplotlib.rcParams['axes.unicode_minus'] = False
 from PIL import Image
 
-# ── 配置 ──────────────────────────────────────────────────────
-DATAROOT    = "/data/jhc"
-OUTDIR_BASE = "/data/jhc/test"
+# ── 默认配置 ──────────────────────────────────────────────────────
+# 可通过命令行 --dataroot / --outdir_base 覆盖，避免每次都要改源码。
+DATAROOT    = "/data/sets/nuscenes"
+OUTDIR_BASE = "./output/pa_visible"
 VERSION     = "v1.0-mini"
 
 CAMERAS = ['CAM_FRONT','CAM_FRONT_LEFT','CAM_FRONT_RIGHT',
@@ -236,7 +236,7 @@ def _clip_line(x1, y1, x2, y2, W, H):
 
 
 def visualize_occluded_frame_multicam(nusc, sample_token, frame_labels,
-                                       save_path):
+                                       save_path, dataroot: str = DATAROOT):
     """
     多相机可视化：CAM_FRONT + CAM_FRONT_LEFT + CAM_FRONT_RIGHT（三图横排）
     改进：
@@ -260,7 +260,7 @@ def visualize_occluded_frame_multicam(nusc, sample_token, frame_labels,
     for ax_i, cam_ch in enumerate(cam_list):
         ax = axes[ax_i]
         cam_sd   = nusc.get('sample_data', sample['data'][cam_ch])
-        img_path = Path(DATAROOT) / cam_sd['filename']
+        img_path = Path(dataroot) / cam_sd['filename']
         img = (Image.open(img_path).convert('RGB')
                if img_path.exists()
                else Image.new('RGB', (1600, 900), (20, 20, 30)))
@@ -428,16 +428,17 @@ def visualize_bev_occluded(nusc, sample_token, frame_labels, save_path):
 
 # ── 文件复制 ──────────────────────────────────────────────────
 
-def copy_files(nusc, token):
-    base = Path(OUTDIR_BASE)/'occluded_frames'
+def copy_files(nusc, token, dataroot: str = DATAROOT,
+               outdir_base: str = OUTDIR_BASE):
+    base = Path(outdir_base)/'occluded_frames'
     sam  = nusc.get('sample', token)
     for ch in CAMERAS:
         sd  = nusc.get('sample_data', sam['data'][ch])
-        src = Path(DATAROOT)/sd['filename']; dst = base/sd['filename']
+        src = Path(dataroot)/sd['filename']; dst = base/sd['filename']
         dst.parent.mkdir(parents=True, exist_ok=True)
         if not dst.exists() and src.exists(): shutil.copy2(src, dst)
     sd  = nusc.get('sample_data', sam['data'][LIDAR])
-    src = Path(DATAROOT)/sd['filename']; dst = base/sd['filename']
+    src = Path(dataroot)/sd['filename']; dst = base/sd['filename']
     dst.parent.mkdir(parents=True, exist_ok=True)
     if not dst.exists() and src.exists(): shutil.copy2(src, dst)
 
@@ -446,20 +447,31 @@ def copy_files(nusc, token):
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--vis_n',   type=int, default=10,
+    parser.add_argument('--dataroot',    type=str, default=DATAROOT,
+                        help='nuScenes dataset root')
+    parser.add_argument('--outdir_base', type=str, default=OUTDIR_BASE,
+                        help='Base output directory')
+    parser.add_argument('--version',     type=str, default=VERSION,
+                        help='nuScenes version')
+    parser.add_argument('--vis_n',       type=int, default=10,
                         help='可视化帧数（-1=全部）')
-    parser.add_argument('--bev',     action='store_true',
+    parser.add_argument('--bev',         action='store_true',
                         help='同时生成 BEV 俯视图')
-    parser.add_argument('--no_copy', action='store_true',
+    parser.add_argument('--no_copy',     action='store_true',
                         help='不复制传感器文件')
     args = parser.parse_args()
 
-    out = Path(OUTDIR_BASE)
+    dataroot = args.dataroot
+    outdir_base = args.outdir_base
+    version = args.version
+
+    out = Path(outdir_base)
     vis_dir = out/'occluded_vis'
     vis_dir.mkdir(parents=True, exist_ok=True)
 
-    nusc = NuScenes(version=VERSION, dataroot=DATAROOT, verbose=False)
-    print(f"NuScenes loaded: {len(nusc.scene)} scenes, {len(nusc.sample)} samples")
+    nusc = NuScenes(version=version, dataroot=dataroot, verbose=False)
+    print(f"NuScenes {version} loaded from {dataroot}: "
+          f"{len(nusc.scene)} scenes, {len(nusc.sample)} samples")
 
     print("\n[Version B] 扫描所有帧中的遮挡 PA 目标标注...")
     labels = collect_occluded_labels(nusc)
@@ -483,7 +495,7 @@ def main():
     # 复制传感器文件
     if not args.no_copy:
         for token in tqdm(labels, desc="Copy files"):
-            copy_files(nusc, token)
+            copy_files(nusc, token, dataroot=dataroot, outdir_base=outdir_base)
 
     # 可视化
     tokens = sorted(labels.keys(),
@@ -496,7 +508,8 @@ def main():
         try:
             visualize_occluded_frame_multicam(
                 nusc, tok, labels[tok],
-                str(vis_dir/f'{tok}.png')
+                str(vis_dir/f'{tok}.png'),
+                dataroot=dataroot,
             )
             if args.bev:
                 visualize_bev_occluded(

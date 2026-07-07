@@ -15,7 +15,7 @@ nuScenes coordinate conventions
 
 import numpy as np
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 try:
     from nuscenes.nuscenes import NuScenes

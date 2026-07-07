@@ -27,14 +27,37 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))  # repo root, for common/
 
 from modules.ray_casting     import RayCaster3D, voxel_to_bev_maxpool, compute_osz_from_ego_raycasting
-from modules.crf_refine      import CRFBoundaryRefiner, HierarchicalOSZLoss, OSZRefineCNN
-from modules.drivable_filter import build_drivable_mask, filter_osz_by_drivable, MAP_AVAILABLE
+
+# drivable_filter.py depends on shapely + the nuScenes map API. The core OSZ
+# pipeline (geometric ray casting) works without them, so guard the import and
+# skip the optional semantic filter when they are missing.
+try:
+    from modules.drivable_filter import build_drivable_mask, filter_osz_by_drivable, MAP_AVAILABLE
+    _DRIVABLE_FILTER_AVAILABLE = True
+except ImportError:
+    build_drivable_mask = filter_osz_by_drivable = None
+    MAP_AVAILABLE = False
+    _DRIVABLE_FILTER_AVAILABLE = False
+
+# crf_refine.py depends on torch; don't make the whole pipeline fail on CPU-only
+# environments just because someone wants to run geometric OSZ without CNN.
+try:
+    from modules.crf_refine import CRFBoundaryRefiner, HierarchicalOSZLoss, OSZRefineCNN
+    _CRF_AVAILABLE = True
+except ImportError:
+    CRFBoundaryRefiner = HierarchicalOSZLoss = OSZRefineCNN = None
+    _CRF_AVAILABLE = False
 from utils.nuscenes_loader   import NuScenesOSZLoader
 from visualize.bev_viz       import (plot_bev_osz, plot_refinement_comparison,
                                      plot_camera_osz_comparison, plot_pa_osz,
                                      plot_gt_osz)
+from common.bev_config import (
+    BEV_RANGE_XYXY   as DEFAULT_BEV_RANGE,
+    BEV_RESOLUTION_M as DEFAULT_BEV_RES,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -169,14 +192,14 @@ def main():
     parser.add_argument('--max_samples', type=int, default=3,
                         help='Number of frames to process')
     parser.add_argument('--bev_range', type=float, nargs=4,
-                        default=[-50, 50, -50, 50],
-                        metavar=('X_MIN','X_MAX','Y_MIN','Y_MAX'))
-    parser.add_argument('--bev_res',   type=float, default=0.4,
-                        help='BEV resolution in metres (smaller = slower)')
+                        default=list(DEFAULT_BEV_RANGE),
+                        metavar=('X_MIN','X_MAX','Y_MIN','Y_MAX'),
+                        help='BEV range in metres (default from common/bev_config.py)')
+    parser.add_argument('--bev_res',   type=float, default=DEFAULT_BEV_RES,
+                        help='BEV resolution in metres (default from common/bev_config.py)')
     parser.add_argument('--z_min',     type=float, default=0.3)
     parser.add_argument('--z_max',     type=float, default=2.2)
     parser.add_argument('--z_res',     type=float, default=0.3)
-    parser.add_argument('--crf_iters', type=int,   default=5)
     parser.add_argument('--train_cnn', action='store_true',
                         help='Run one self-supervised CNN training epoch')
     parser.add_argument('--outdir',    type=str, default='./osz_output')
@@ -211,7 +234,6 @@ def main():
     # different task from OSZ boundary post-processing.
     # If soft boundary refinement is later needed, use the learned
     # OSZRefineCNN + HierarchicalOSZLoss in crf_refine.py (optional Stage 5).
-    crf = None  # kept as variable so optional CNN training block still compiles
 
     loader = NuScenesOSZLoader(
         dataroot    = args.dataroot,
@@ -225,14 +247,18 @@ def main():
     device = 'cpu'
     cnn_model, optimizer, loss_fn = None, None, None
     if args.train_cnn:
-        try:
-            import torch
-            cnn_model = OSZRefineCNN(in_channels=2).to(device)
-            optimizer = torch.optim.Adam(cnn_model.parameters(), lr=1e-3)
-            loss_fn   = HierarchicalOSZLoss().to(device)
-            print(f"\n  CNN params: {sum(p.numel() for p in cnn_model.parameters()):,}")
-        except ImportError:
-            print("  [WARN] torch not available; skipping CNN training.")
+        if not _CRF_AVAILABLE:
+            print("  [WARN] crf_refine module not importable (torch/scipy missing?); "
+                  "skipping CNN training.")
+        else:
+            try:
+                import torch
+                cnn_model = OSZRefineCNN(in_channels=2).to(device)
+                optimizer = torch.optim.Adam(cnn_model.parameters(), lr=1e-3)
+                loss_fn   = HierarchicalOSZLoss().to(device)
+                print(f"\n  CNN params: {sum(p.numel() for p in cnn_model.parameters()):,}")
+            except ImportError:
+                print("  [WARN] torch not available; skipping CNN training.")
 
     # ── Per-frame processing ──────────────────────────────────────────────
     all_frames = list(loader)   # collect for optional CNN training
@@ -288,7 +314,8 @@ def main():
         # their shadow is not a valid PA candidate region.
         drivable_mask = None
         osz_pa = osz_raw  # fallback: unfiltered (used when no map available)
-        if not loader._use_mock and MAP_AVAILABLE and hasattr(loader, 'nusc'):
+        if (not loader._use_mock and _DRIVABLE_FILTER_AVAILABLE
+                and MAP_AVAILABLE and hasattr(loader, 'nusc')):
             try:
                 drivable_mask = build_drivable_mask(
                     nusc        = loader.nusc,
@@ -389,7 +416,7 @@ def main():
             cnn_model, optimizer, loss_fn,
             all_frames, caster, None, device
         )
-        print(f"\n  Epoch avg losses: "
+        print("\n  Epoch avg losses: "
               + "  ".join(f"{k}={v:.4f}" for k, v in avg_losses.items()))
 
         # Save model weights

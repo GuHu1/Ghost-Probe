@@ -32,14 +32,26 @@ _draw_ego arrow:
     Arrow from (0, size) → (0, size*1.5):  x stays 0 (centerline), y increases (forward). ✓
 """
 
+import sys
+from pathlib import Path
+
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.colors import ListedColormap
-from typing import Dict, Optional, List
-from pathlib import Path
+from typing import Dict, Optional
+
+# Allow importing common/ when this file is imported directly.
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+try:
+    from common.bev_config import BEV_RESOLUTION_M as _DEFAULT_BEV_RES
+except Exception:
+    _DEFAULT_BEV_RES = 0.2
 
 
 CAMERA_COLORS = {
@@ -566,7 +578,7 @@ def plot_gt_osz(
     nusc,
     sample_token:  str,
     bev_range:     tuple = (-50, 50, -50, 50),
-    bev_res:       float = 0.4,
+    bev_res:       float = _DEFAULT_BEV_RES,
     save_path:     Optional[str] = None,
 ) -> plt.Figure:
     """

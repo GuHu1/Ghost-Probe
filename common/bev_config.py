@@ -1,8 +1,8 @@
 """
 common/bev_config.py
 =====================
-The ONE place that defines the BEV grid shared by OSZ/, preprocess/, and
-filter/.
+The ONE place that defines the BEV grid shared by OSZ/, PA_gen_v1/, and
+PA_gen_v2/.
 
 Karpathy rule: don't rely on three files independently hard-coding "0.2"
 (or "0.4", or "0.5" — which is exactly what had happened here) and hoping
@@ -10,9 +10,9 @@ nobody edits only two of them. There is exactly one knob below. Change it
 here; every module that imports from this file picks it up automatically.
 
 Historically each consumer used a different tuple ORDER for its BEV range:
-    OSZ/        : (x_min, x_max, y_min, y_max)
-    preprocess/ : (x0, y0, x1, y1)          [= x_min, y_min, x_max, y_max]
-    filter/     : a single symmetric extent + a square pixel grid
+    OSZ/       : (x_min, x_max, y_min, y_max)
+    PA_gen_v1/ : (x0, y0, x1, y1)          [= x_min, y_min, x_max, y_max]
+    PA_gen_v2/ : a single symmetric extent + a square pixel grid
 Rather than force every file to adopt a common order (risking a silent
 x/y transposition bug somewhere), this module derives the SAME underlying
 grid in each of those shapes from the same two source numbers below.
@@ -37,11 +37,11 @@ BEV_RESOLUTION_M = 0.2    # metres per BEV cell  <-- CHANGE THIS ONE NUMBER
 # OSZ/modules/drivable_filter.py
 BEV_RANGE_XYXY = (-BEV_EXTENT_M, BEV_EXTENT_M, -BEV_EXTENT_M, BEV_EXTENT_M)
 
-# preprocess/ convention: (x0, y0, x1, y1)  — used by
-# preprocess/create_pa_labels_mini.py, create_pa_labels_full.py
+# PA_gen_v1/ convention: (x0, y0, x1, y1)  — used by
+# PA_gen_v1/create_pa_labels_mini.py, create_pa_labels_full.py
 BEV_RANGE_X0Y0X1Y1 = (-BEV_EXTENT_M, -BEV_EXTENT_M, BEV_EXTENT_M, BEV_EXTENT_M)
 
-# filter/ convention: single symmetric extent + square pixel grid,
+# PA_gen_v2/ convention: single symmetric extent + square pixel grid,
 # ego always sits at pixel (BEV_CENTER, BEV_CENTER)
 BEV_RANGE_M = BEV_EXTENT_M
 
@@ -72,8 +72,8 @@ def describe() -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Shared coordinate helpers (filter/'s pixel<->metric convention).
-# Previously duplicated inside filter/osz_geometry.py; centralised here
+# Shared coordinate helpers (PA_gen_v2/'s pixel<->metric convention).
+# Previously duplicated inside PA_gen_v2/osz_geometry_legacy.py; centralised here
 # so there is exactly one implementation to trust.
 # ─────────────────────────────────────────────────────────────────────
 

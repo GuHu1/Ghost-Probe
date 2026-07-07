@@ -1,0 +1,40 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Generated outputs
+output/
+*/output/
+osz_output/
+*.pkl
+*.pkl.json
+*.npy
+*.npz
+*.png
+*.jpg
+*.jpeg
+
+# OS / packaging
+.DS_Store
+Thumbs.db
+dist/
+build/
+*.egg-info/
+
+# Data directories (user-specific; never commit raw nuScenes data)
+/data/

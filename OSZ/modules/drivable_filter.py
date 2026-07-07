@@ -23,7 +23,6 @@ import numpy as np
 from typing import Tuple
 from PIL import Image, ImageDraw
 from scipy.ndimage import binary_dilation
-from shapely.geometry import MultiPolygon, Polygon
 from shapely import affinity
 
 try:

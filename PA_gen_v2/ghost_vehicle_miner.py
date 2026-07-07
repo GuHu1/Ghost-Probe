@@ -389,7 +389,7 @@ def mine_ghost_events(
     all_events = positive_events + negative_events
 
     print(f"\n{'='*60}")
-    print(f"Mining complete.")
+    print("Mining complete.")
     print(f"  Positive events (ghost emergence): {len(positive_events)}")
     print(f"  Negative events (always visible):  {len(negative_events)}")
     print(f"  Dropped (ambiguous, no evidence):  {n_dropped_ambiguous}")

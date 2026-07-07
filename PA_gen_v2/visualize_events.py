@@ -33,7 +33,6 @@ Changes vs. the original version
 """
 
 import sys
-import json
 import argparse
 from pathlib import Path
 from typing import List, Dict
@@ -44,9 +43,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import matplotlib.patheffects as pe
-from tqdm import tqdm
 
-import pyquaternion
 from nuscenes.nuscenes import NuScenes
 
 _THIS_DIR  = Path(__file__).resolve().parent
@@ -233,7 +230,7 @@ def print_event_stats(events: List[Dict]) -> None:
     negatives = [e for e in events if e['label'] == 0]
 
     print(f"\n{'─'*50}")
-    print(f"Event set statistics")
+    print("Event set statistics")
     print(f"{'─'*50}")
     print(f"Total events   : {len(events)}")
     print(f"Positives      : {len(positives)}")
@@ -241,14 +238,14 @@ def print_event_stats(events: List[Dict]) -> None:
 
     if positives:
         osz_counts = [e['n_osz_frames'] for e in positives]
-        print(f"\nPositive events — confirmed-OSZ frame counts:")
+        print("\nPositive events — confirmed-OSZ frame counts:")
         print(f"  mean : {np.mean(osz_counts):.2f}")
         print(f"  min  : {np.min(osz_counts)}")
         print(f"  max  : {np.max(osz_counts)}")
 
         dists = [np.sqrt(e['emerge_bev_xy'][0]**2 + e['emerge_bev_xy'][1]**2)
                  for e in positives]
-        print(f"\nEmergence distance from ego (m):")
+        print("\nEmergence distance from ego (m):")
         print(f"  mean : {np.mean(dists):.1f}")
         print(f"  min  : {np.min(dists):.1f}")
         print(f"  max  : {np.max(dists):.1f}")
