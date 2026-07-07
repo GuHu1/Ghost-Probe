@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
-pa_filter_v2.py — Version B：直接可视化 NuScenes 遮挡标注
-================================================================
-逻辑：
-  对每一帧，找出所有 vis<=1 的 PA 类别目标
-  → 直接读取当前帧的 NuScenes 3D 标注
-  → 投影到 CAM_FRONT 图像
-  → 显示当前帧的 visibility / 速度 / 类别
+pa_visible.py
+-------------
+Visualize strongly-occluded Phantom-Agent targets directly from nuScenes
+annotations (visibility_token <= 1) without temporal tracking.
 
-输出：
-  OUTDIR_BASE/
-    occluded_vis/          ← 可视化图片
-    occluded_labels.pkl    ← {sample_token: [label_dict]}
+For each sample we:
+  - find PA-category annotations with visibility <= 1,
+  - project their 3D boxes onto CAM_FRONT / left / right,
+  - overlay visibility level, category, and current velocity.
+
+Output (under OUTDIR_BASE):
+    occluded_vis/          visualization images
+    occluded_labels.pkl    {sample_token: [label_dict]}
     occluded_tokens.txt
-    stats_v2.txt
+    stats.txt
 """
 
 import pickle, shutil
@@ -25,12 +26,12 @@ from nuscenes.nuscenes import NuScenes
 from nuscenes.utils.data_classes import Box
 from nuscenes.utils.geometry_utils import view_points
 import matplotlib
-matplotlib.use('Agg')  # 无显示器环境必须在 import pyplot 前设置
+matplotlib.use('Agg')  # headless-safe backend; must be set before pyplot
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 import matplotlib.font_manager as _fm
 
-# ── 服务器字体配置（修复中文乱码）──
+# Font setup for CJK labels (falls back to DejaVu Sans if unavailable)
 _CJK_FONT = 'Noto Sans CJK JP'
 _available_fonts = {f.name for f in _fm.fontManager.ttflist}
 if _CJK_FONT in _available_fonts:
@@ -42,8 +43,7 @@ else:
 matplotlib.rcParams['axes.unicode_minus'] = False
 from PIL import Image
 
-# ── 默认配置 ──────────────────────────────────────────────────────
-# 可通过命令行 --dataroot / --outdir_base 覆盖，避免每次都要改源码。
+# Default paths — override with --dataroot / --outdir_base on the CLI.
 DATAROOT    = "/data/sets/nuscenes"
 OUTDIR_BASE = "./output/pa_visible"
 VERSION     = "v1.0-mini"
@@ -52,7 +52,7 @@ CAMERAS = ['CAM_FRONT','CAM_FRONT_LEFT','CAM_FRONT_RIGHT',
            'CAM_BACK', 'CAM_BACK_LEFT', 'CAM_BACK_RIGHT']
 LIDAR   = 'LIDAR_TOP'
 
-VIS_OCCLUDED = 1   # <= 此值纳入可视化
+VIS_OCCLUDED = 1   # include annotations with visibility <= this value
 
 PA_CATEGORY_MAP = {
     'vehicle.car':          (0,'Vehicle'),
@@ -68,8 +68,8 @@ PA_CATEGORY_MAP = {
     'vehicle.bicycle':      (2,'Cyclist'),
     'vehicle.motorcycle':   (2,'Cyclist'),
 }
-PA_DIST_THRESHOLD = 100.0   # 仅标注自车 100m 内的 PA
-PA_SIZE_PRIOR = {           # 固定尺寸先验 [l, w, h] (m)
+PA_DIST_THRESHOLD = 100.0   # only consider PA within this radius of ego
+PA_SIZE_PRIOR = {           # fixed size priors [l, w, h] in metres
     0: [4.5, 1.8, 1.5],
     1: [0.5, 0.5, 1.7],
     2: [1.8, 0.6, 1.5],
@@ -77,7 +77,7 @@ PA_SIZE_PRIOR = {           # 固定尺寸先验 [l, w, h] (m)
 PA_COLOR = {0:'#FF5555', 1:'#55FF55', 2:'#5599FF'}
 PA_NAME  = {0:'Vehicle',  1:'Pedestrian', 2:'Cyclist'}
 
-# ── 工具 ──────────────────────────────────────────────────────
+# ── Utilities ────────────────────────────────────────────────────────
 
 def make_tf(trans, rot, inv=False):
     R = Quaternion(rot).rotation_matrix
@@ -85,7 +85,7 @@ def make_tf(trans, rot, inv=False):
     return np.linalg.inv(m) if inv else m
 
 def get_velocity(nusc, ann_token):
-    """双侧差分估计速度（全局坐标系）"""
+    """Estimate velocity by central/back/forward finite difference (global frame)."""
     ann = nusc.get('sample_annotation', ann_token)
     p, n = ann['prev'], ann['next']
     if p and n:
@@ -111,7 +111,7 @@ def get_velocity(nusc, ann_token):
 
 
 def g2l(nusc, sample_token):
-    """Global → LiDAR(T) 4×4 变换矩阵"""
+    """Global -> LiDAR(T) 4x4 transform matrix."""
     sam = nusc.get('sample', sample_token)
     sd  = nusc.get('sample_data', sam['data'][LIDAR])
     cs  = nusc.get('calibrated_sensor', sd['calibrated_sensor_token'])
@@ -122,7 +122,7 @@ def g2l(nusc, sample_token):
     )
 
 def _project_vel_arrow(pos_global, vel_global, ep, cs, K, W, H, scale=1.5):
-    """将全局坐标系中的速度矢量投影到图像平面，返回 (x0,y0,x1,y1) 或 None"""
+    """Project a global velocity vector into the image plane; return (x0,y0,x1,y1) or None."""
     def g2cam(p):
         p = np.array(p, dtype=float)
         p -= np.array(ep['translation'])
@@ -139,17 +139,18 @@ def _project_vel_arrow(pos_global, vel_global, ep, cs, K, W, H, scale=1.5):
     if not (-100 <= x0 <= W+100 and -100 <= y0 <= H+100): return None
     return x0, y0, x1, y1
 
-# ── 核心：收集所有遮挡帧标注 ──────────────────────────────────
+# ── Core: collect occluded-frame annotations ─────────────────────────
 
 def collect_occluded_labels(nusc):
     """
-    对所有 sample，找出 vis<=1 的 PA 类别目标，
-    直接读取 NuScenes 当前帧标注。
-    无需任何时序追踪。
+    Collect occluded PA-category annotations for all samples.
+
+    For each sample, find annotations with visibility <= VIS_OCCLUDED,
+    directly from nuScenes current-frame annotations. No temporal tracking.
     """
     labels = {}   # {sample_token: [label_dict, ...]}
 
-    for sample in tqdm(nusc.sample, desc="扫描 samples"):
+    for sample in tqdm(nusc.sample, desc="Scanning samples"):
         st = sample['token']
         frame_labels = []
 
@@ -158,13 +159,13 @@ def collect_occluded_labels(nusc):
             vis = int(ann['visibility_token'])
 
             if vis > VIS_OCCLUDED:
-                continue   # 不是强遮挡，跳过
+                continue   # not strongly occluded
 
-            # 检查类别
+            # category filter
             inst = nusc.get('instance', ann['instance_token'])
             cat  = nusc.get('category', inst['category_token'])['name']
             if cat not in PA_CATEGORY_MAP:
-                continue   # traffic_cone / barrier 排除
+                continue   # drop traffic_cone / barrier
 
             pa_type, pa_type_str = PA_CATEGORY_MAP[cat]
             vel = get_velocity(nusc, ann_token)
@@ -175,15 +176,15 @@ def collect_occluded_labels(nusc):
                 'category':    cat,
                 'pa_type':     pa_type,
                 'pa_type_str': pa_type_str,
-                # ── NuScenes 当前帧标注（直接使用）──
-                'translation': list(ann['translation']),  # 遮挡目标当前位置
+                # current-frame annotation from nuScenes
+                'translation': list(ann['translation']),
                 'rotation':    list(ann['rotation']),
                 'size':        list(ann['size']),
-                'visibility':  vis,                        # 当前帧真实 visibility
-                # ── 当前帧速度（仅供参考，遮挡中速度意义有限）──
+                'visibility':  vis,
+                # current-frame velocity (finite-difference estimate)
                 'velocity':    (vel.tolist() if not np.isnan(vel).any()
                                 else [np.nan, np.nan, np.nan]),
-                'num_lidar_pts': ann['num_lidar_pts'],     # 框内 LiDAR 点数
+                'num_lidar_pts': ann['num_lidar_pts'],
             }
             frame_labels.append(label)
 
@@ -192,12 +193,12 @@ def collect_occluded_labels(nusc):
 
     return labels   # {sample_token: [label_dict]}
 
-# ── 可视化 ────────────────────────────────────────────────────
+# ── Visualization ────────────────────────────────────────────────────
 
 def _clip_line(x1, y1, x2, y2, W, H):
     """
-    Cohen-Sutherland 线段裁剪：将线段裁剪到 [0,W]×[0,H] 范围内。
-    返回裁剪后的端点，若线段完全在范围外则返回 None。
+    Cohen-Sutherland line clip against [0, W] × [0, H].
+    Returns clipped endpoints, or None if the line is entirely outside.
     """
     INSIDE, LEFT, RIGHT, BOTTOM, TOP = 0, 1, 2, 4, 8
 
@@ -205,17 +206,17 @@ def _clip_line(x1, y1, x2, y2, W, H):
         c = INSIDE
         if x < 0:   c |= LEFT
         elif x > W: c |= RIGHT
-        if y < 0:   c |= TOP       # 注意图像坐标 y 向下为正
+        if y < 0:   c |= TOP       # image y points downward
         elif y > H: c |= BOTTOM
         return c
 
     c1, c2 = code(x1, y1), code(x2, y2)
     while True:
-        if not (c1 | c2):       # 完全在内部
+        if not (c1 | c2):       # fully inside
             return x1, y1, x2, y2
-        if c1 & c2:             # 完全在外部同侧
+        if c1 & c2:             # fully outside on the same side
             return None
-        # 选取在外部的点
+        # pick the endpoint that lies outside
         c_out = c1 if c1 else c2
         if c_out & BOTTOM:
             x = x1 + (x2-x1)*(H-y1)/(y2-y1) if y2!=y1 else x1
@@ -238,18 +239,18 @@ def _clip_line(x1, y1, x2, y2, W, H):
 def visualize_occluded_frame_multicam(nusc, sample_token, frame_labels,
                                        save_path, dataroot: str = DATAROOT):
     """
-    多相机可视化：CAM_FRONT + CAM_FRONT_LEFT + CAM_FRONT_RIGHT（三图横排）
-    改进：
-      - 10m 距离过滤
-      - 使用方案固定尺寸先验（不用标注原始 size）
-      - 细线框（lw=0.7）减少视野遮挡
-      - 速度矢量箭头（黄色）
-      - vis=当前帧值
+    Multi-camera visualization: CAM_FRONT + CAM_FRONT_LEFT + CAM_FRONT_RIGHT.
+
+      - distance filter (PA_DIST_THRESHOLD)
+      - fixed size priors instead of raw annotation sizes
+      - thin boxes (lw=0.7) to reduce clutter
+      - yellow velocity arrows
+      - visibility = current-frame value
     """
     sample   = nusc.get('sample', sample_token)
     cam_list = ['CAM_FRONT', 'CAM_FRONT_LEFT', 'CAM_FRONT_RIGHT']
 
-    # 10m 距离过滤
+    # ego-distance filter
     G2L = g2l(nusc, sample_token)
     def dist_ego(t): return float(np.linalg.norm((G2L @ np.append(t,1.))[:2]))
     near_labels = [l for l in frame_labels if dist_ego(l['translation']) <= PA_DIST_THRESHOLD]
@@ -276,9 +277,9 @@ def visualize_occluded_frame_multicam(nusc, sample_token, frame_labels,
             pa_type = lbl['pa_type']
             color   = PA_COLOR[pa_type]
 
-            # ★ 使用方案固定尺寸先验
-            prior_lwh = PA_SIZE_PRIOR[pa_type]           # [l, w, h]
-            prior_wlh = [prior_lwh[1], prior_lwh[0], prior_lwh[2]]  # nuScenes [w,l,h]
+            # fixed size prior (nuScenes Box expects [w, l, h])
+            prior_lwh = PA_SIZE_PRIOR[pa_type]
+            prior_wlh = [prior_lwh[1], prior_lwh[0], prior_lwh[2]]
 
             box = Box(lbl['translation'], prior_wlh, Quaternion(lbl['rotation']))
             box.translate(-np.array(ep['translation']))
@@ -297,7 +298,7 @@ def visualize_occluded_frame_multicam(nusc, sample_token, frame_labels,
                     np.all(y2d < -margin) or np.all(y2d > H+margin)):
                 continue
 
-            # ★ 细线框 lw=0.7
+            # thin wireframe (lw=0.7)
             edges = [(0,1),(1,2),(2,3),(3,0),(4,5),(5,6),(6,7),(7,4),(0,4),(1,5),(2,6),(3,7)]
             for s, e in edges:
                 cl = _clip_line(float(x2d[s]),float(y2d[s]),float(x2d[e]),float(y2d[e]),W,H)
@@ -311,7 +312,7 @@ def visualize_occluded_frame_multicam(nusc, sample_token, frame_labels,
             cx = float(np.mean(x2d[in_view]))
             cy = float(np.clip(np.min(y2d[in_view])-18, 5, H-30))
 
-            # 标注文字（紧凑）
+            # compact label text
             vel = lbl['velocity']
             vx, vy = float(vel[0]), float(vel[1])
             spd = np.hypot(vx, vy) if not np.isnan(vx) else float('nan')
@@ -322,7 +323,7 @@ def visualize_occluded_frame_multicam(nusc, sample_token, frame_labels,
                     bbox=dict(fc=color, alpha=0.65, pad=1.2, ec='none', boxstyle='round'),
                     zorder=5)
 
-            # ★ 速度矢量箭头（黄色）
+            # yellow velocity arrow
             if not np.isnan(vx) and np.hypot(vx,vy) > 0.1:
                 arr = _project_vel_arrow(lbl['translation'],[vx,vy,0.],ep,cs,K,W,H,scale=1.5)
                 if arr is not None:
@@ -332,14 +333,15 @@ def visualize_occluded_frame_multicam(nusc, sample_token, frame_labels,
             drawn += 1
 
         ax.set_xlim(0, W); ax.set_ylim(H, 0)
-        ax.set_title(f'{cam_ch}  |  10m内: {drawn}个PA  细线=先验尺寸  黄箭头=V',
+        ax.set_title(f'{cam_ch}  |  within {PA_DIST_THRESHOLD:.0f}m: {drawn} PAs  '
+                     f'thin=size prior  yellow=V',
                      color='#aaaaff', fontsize=9)
         ax.axis('off')
 
     legend_elems = [
         Line2D([0],[0], color=PA_COLOR[t], lw=2, label=f'{PA_NAME[t]} vis<=1')
         for t in [0,1,2]
-    ] + [Line2D([0],[0], color='#FFD700', lw=2, label='当前速度V_current')]
+    ] + [Line2D([0],[0], color='#FFD700', lw=2, label='current velocity V')]
     fig.legend(handles=legend_elems, loc='lower center',
                facecolor='#1a1a2e', labelcolor='white',
                fontsize=9, ncol=4, framealpha=0.9)
@@ -350,8 +352,9 @@ def visualize_occluded_frame_multicam(nusc, sample_token, frame_labels,
     n_cyc = sum(1 for l in near_labels if l['pa_type']==2)
     fig.suptitle(
         f"Token: {sample_token[:20]}   "
-        f"10m内遮挡目标: {n_total}  (V={n_veh} P={n_ped} C={n_cyc})\n"
-        f"3D框=先验尺寸  vis=当前帧值  黄箭头=当前速度方向",
+        f"occluded targets within {PA_DIST_THRESHOLD:.0f}m: {n_total}  "
+        f"(V={n_veh} P={n_ped} C={n_cyc})\n"
+        f"3D box = size prior  vis = current frame  yellow arrow = velocity",
         color='white', fontsize=9.5
     )
     plt.tight_layout(rect=[0, 0.05, 1, 1])
@@ -361,14 +364,14 @@ def visualize_occluded_frame_multicam(nusc, sample_token, frame_labels,
 
 def visualize_bev_occluded(nusc, sample_token, frame_labels, save_path):
     """
-    BEV 俯视图：显示所有遮挡目标在当前帧的位置（ego 坐标系）
+    BEV overview: show all occluded targets in the current frame (ego frame).
     """
     sample = nusc.get('sample', sample_token)
     sd     = nusc.get('sample_data', sample['data'][LIDAR])
     cs     = nusc.get('calibrated_sensor', sd['calibrated_sensor_token'])
     ep     = nusc.get('ego_pose', sd['ego_pose_token'])
 
-    # 全局 → ego 旋转（只旋转）
+    # global -> ego rotation only
     R_g2e = Quaternion(ep['rotation']).rotation_matrix.T
     T_ego = np.array(ep['translation'])
     R_l2e = Quaternion(cs['rotation']).rotation_matrix
@@ -381,14 +384,14 @@ def visualize_bev_occluded(nusc, sample_token, frame_labels, save_path):
 
     for lbl in frame_labels:
         color = PA_COLOR[lbl['pa_type']]
-        # 全局位置 → ego 坐标系
+        # global -> ego
         pos_g  = np.array(lbl['translation'])
-        pos_e  = R_g2e @ (pos_g - T_ego)   # ego 坐标
-        # 再变换到 LiDAR 坐标系（近似等于 ego 对于 BEV 俯视）
+        pos_e  = R_g2e @ (pos_g - T_ego)
+        # ego -> LiDAR (approximately ego for BEV top-down)
         pos_l  = R_l2e.T @ (pos_e - np.array(cs['translation']))
         x, y   = pos_l[0], pos_l[1]
 
-        # 绘制 BEV 矩形（旋转框）
+        # rotated BEV rectangle
         q_g   = Quaternion(lbl['rotation'])
         q_e2l = Quaternion(cs['rotation']).inverse
         q_g2e = Quaternion(ep['rotation']).inverse
@@ -420,13 +423,13 @@ def visualize_bev_occluded(nusc, sample_token, frame_labels, save_path):
     ax.set_xlabel('X (m)', color='white', fontsize=10)
     ax.set_ylabel('Y (m)', color='white', fontsize=10)
     ax.tick_params(colors='white')
-    ax.set_title(f'BEV — 当前帧遮挡 PA 目标位置\n'
+    ax.set_title(f'BEV — occluded PA target locations\n'
                  f'Token: {sample_token[:20]}', color='#aaaaff', fontsize=9)
     plt.tight_layout()
     plt.savefig(save_path, dpi=110, facecolor='#0f0f1e', bbox_inches='tight')
     plt.close()
 
-# ── 文件复制 ──────────────────────────────────────────────────
+# ── File copy ────────────────────────────────────────────────────────
 
 def copy_files(nusc, token, dataroot: str = DATAROOT,
                outdir_base: str = OUTDIR_BASE):
@@ -442,7 +445,7 @@ def copy_files(nusc, token, dataroot: str = DATAROOT,
     dst.parent.mkdir(parents=True, exist_ok=True)
     if not dst.exists() and src.exists(): shutil.copy2(src, dst)
 
-# ── 主程序 ────────────────────────────────────────────────────
+# ── Main ─────────────────────────────────────────────────────────────
 
 def main():
     import argparse
@@ -486,18 +489,18 @@ def main():
     print(f"  PA 实例总数: {total}")
     print(f"  Vehicle={type_c[0]}  Pedestrian={type_c[1]}  Cyclist={type_c[2]}")
 
-    # 保存 pkl
+    # save labels
     with open(out/'occluded_labels.pkl','wb') as f:
         pickle.dump(labels, f)
     with open(out/'occluded_tokens.txt','w') as f:
         f.writelines(t+'\n' for t in labels)
 
-    # 复制传感器文件
+    # copy sensor files
     if not args.no_copy:
         for token in tqdm(labels, desc="Copy files"):
             copy_files(nusc, token, dataroot=dataroot, outdir_base=outdir_base)
 
-    # 可视化
+    # visualization
     tokens = sorted(labels.keys(),
                     key=lambda t: len(labels[t]), reverse=True)
     if args.vis_n != -1:
@@ -519,7 +522,7 @@ def main():
         except Exception as ex:
             print(f"\n  [WARN] {tok[:12]}: {ex}")
 
-    # 统计报告
+    # statistics report
     report = f"""
 {'='*50}
   Version B — 遮挡标注直接可视化统计

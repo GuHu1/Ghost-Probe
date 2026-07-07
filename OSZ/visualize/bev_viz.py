@@ -317,9 +317,9 @@ def plot_camera_osz_comparison(
     save_path: Optional[str] = None,
 ) -> plt.Figure:
     """
-    每行展示一个相机的：原图 → 稠密深度图 → 该相机视角的 BEV 阴影掩码。
-    最后一行展示融合结果：OSZ Raw → OSZ Refined → BEV Depth。
-    大标题带上 frame token，方便识别当前帧。
+    One row per camera: image → dense depth → camera-view BEV shadow mask.
+    Final row shows fused results: OSZ Raw → OSZ Refined → BEV Depth.
+    The main title includes the frame token for easy identification.
     """
     cam_names = list(images.keys())
     n_cam = len(cam_names)
@@ -340,19 +340,19 @@ def plot_camera_osz_comparison(
         ax_depth = axes[i][1]
         ax_bev   = axes[i][2]
 
-        # 原图
+        # image
         ax_img.imshow(images[cam_name])
         ax_img.set_title(f"{cam_name} — Image", fontsize=10)
         ax_img.axis('off')
 
-        # 稠密深度图
+        # dense depth map
         dmap = depth_maps[cam_name]
         im_d = ax_depth.imshow(dmap, cmap='plasma', vmin=0, vmax=70)
         ax_depth.set_title(f"{cam_name} — Dense Depth", fontsize=10)
         ax_depth.axis('off')
         plt.colorbar(im_d, ax=ax_depth, fraction=0.046, pad=0.04)
 
-        # 该相机的 BEV 阴影掩码
+        # per-camera BEV shadow mask
         mask = per_cam_masks[cam_name]
         color = CAMERA_COLORS.get(cam_name, '#888888')
         cmap_cam = ListedColormap(['none', color])
@@ -368,7 +368,7 @@ def plot_camera_osz_comparison(
         ax_bev.tick_params(labelsize=6)
         _draw_ego(ax_bev)
 
-    # ── 最后一行：融合结果 ────────────────────────────────────────────────
+    # ── Last row: fused results ─────────────────────────────────────────
     ax_osz = axes[-1][0]
     if bev_occ is not None:
         ax_osz.imshow(bev_occ, origin='lower', extent=extent,

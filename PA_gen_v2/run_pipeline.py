@@ -17,16 +17,7 @@ Steps (in order, stop on any failure):
 Do NOT skip step 1 and 2. The visual check in step 2 is the fastest way to
 catch a coordinate convention mistake before it silently corrupts step 3.
 
-Changes vs. the original version
----------------------------------
-- OUT_DIR is no longer hardcoded to /home/claude/phantom_agent; it defaults
-  to PA_gen_v2/output/ inside this repo, and can be overridden with --outdir.
-- --dataroot has no fake default that would just fail deep inside NuScenes()
-  — it's a required argument, same as before, but every downstream script
-  now shares that same requirement instead of silently trying
-  /data/nuscenes.
-- Step 2 now calls osz_source_viz.py (OSZ/modules/ray_casting.py via
-  osz_source.py) instead of the old osz_geometry.py.
+Output defaults to PA_gen_v2/output/ inside this repo; override with --outdir.
 """
 
 import argparse

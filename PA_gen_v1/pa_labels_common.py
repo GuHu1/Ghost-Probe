@@ -40,7 +40,7 @@ from common.bev_config import (
 )
 
 
-# ── 字体 ────────────────────────────────────────────────────────────────────
+# ── Font ───────────────────────────────────────────────────────────────────
 _CJK = 'Noto Sans CJK JP'
 if _CJK in {f.name for f in _fm.fontManager.ttflist}:
     matplotlib.rcParams['font.family'] = _CJK
@@ -51,21 +51,21 @@ matplotlib.rcParams['axes.unicode_minus'] = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  通用配置
+#  Common config
 # ═══════════════════════════════════════════════════════════════════════════
 CAMERAS = [
     'CAM_FRONT', 'CAM_FRONT_LEFT', 'CAM_FRONT_RIGHT',
     'CAM_BACK', 'CAM_BACK_LEFT', 'CAM_BACK_RIGHT',
 ]
 LIDAR = 'LIDAR_TOP'
-N_SWEEPS = 9          # BEVDet 默认 sweep 数
+N_SWEEPS = 9          # matches BEVDet default
 
 VIS_OCCLUDED = 1
 VIS_EMERGED = 4
 BACK_SECONDS = 5.0
 LAMBDA = 0.5
 
-# BEV grid 来自 common/bev_config.py（项目唯一的 BEV 网格定义源）
+# BEV grid from common/bev_config.py — single source of truth for the repo
 H_BEV = int((BEV_RANGE[3] - BEV_RANGE[1]) / BEV_RES)
 W_BEV = int((BEV_RANGE[2] - BEV_RANGE[0]) / BEV_RES)
 
@@ -91,7 +91,7 @@ PA_NAME = {0: 'Vehicle', 1: 'Pedestrian', 2: 'Cyclist'}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  工具函数
+#  Utilities
 # ═══════════════════════════════════════════════════════════════════════════
 def make_tf(trans, rot, inv=False):
     R = Quaternion(rot).rotation_matrix
@@ -205,7 +205,7 @@ def _project_vel_arrow(pos_g, vel_g, ep, cs, K, W, H, scale=1.5):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  标注核心
+#  Label core
 # ═══════════════════════════════════════════════════════════════════════════
 def _make_neg_label(ann_token, inst, cat, pa_type, pa_type_str, ann):
     return {
@@ -234,7 +234,7 @@ def _make_neg_label(ann_token, inst, cat, pa_type, pa_type_str, ann):
 
 def build_all_pa_labels(nusc):
     all_occ_anns, pos_labels = {}, {}
-    for inst in tqdm(nusc.instance, desc="扫描 instances"):
+    for inst in tqdm(nusc.instance, desc="Scanning instances"):
         cat = nusc.get('category', inst['category_token'])['name']
         if cat not in PA_CATEGORY_MAP:
             continue
@@ -387,7 +387,7 @@ def compute_bev_gt(nusc, sample_token, pa_labels):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  可视化
+#  Visualization
 # ═══════════════════════════════════════════════════════════════════════════
 def _draw_3d_box_on_ax(ax, lbl, ep, cs, K, W, H, color, lw=0.7):
     prior_lwh = PA_SIZE_PRIOR[lbl['pa_type']]
@@ -432,7 +432,7 @@ def _draw_3d_box_on_ax(ax, lbl, ep, cs, K, W, H, color, lw=0.7):
 
 
 def visualize_multicam(nusc, sample_token, frame_labels, save_path, dataroot):
-    """三相机可视化：3D框 + 正/负样本标记 + V_emerge 箭头"""
+    """Three-camera visualization: 3D boxes + pos/neg labels + V_emerge arrows."""
     sample = nusc.get('sample', sample_token)
     G2L = g2l(nusc, sample_token)
     near = [l for l in frame_labels
@@ -487,7 +487,7 @@ def visualize_multicam(nusc, sample_token, frame_labels, save_path, dataroot):
 
 
 def visualize_bev(nusc, sample_token, frame_labels, frame_data, save_path):
-    """BEV：底层热力图 + 上层矢量图（旋转框 ● ★ 连线 V_emerge 箭头）"""
+    """BEV heatmap base layer + vector overlay (rotated boxes, stars, links, V_emerge arrows)."""
     sample = nusc.get('sample', sample_token)
     sd = nusc.get('sample_data', sample['data'][LIDAR])
     cs = nusc.get('calibrated_sensor', sd['calibrated_sensor_token'])
@@ -594,7 +594,7 @@ def visualize_bev(nusc, sample_token, frame_labels, frame_data, save_path):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  文件复制
+#  File copy
 # ═══════════════════════════════════════════════════════════════════════════
 def copy_sensor_files(nusc, sample_token, base, dataroot):
     sam = nusc.get('sample', sample_token)
@@ -629,7 +629,7 @@ def copy_maps_and_meta(dataroot, base, version):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  主程序
+#  Main
 # ═══════════════════════════════════════════════════════════════════════════
 def main(version: str, dataroot: str, outdir_base: str,
          no_copy: bool = False, vis_n: int = 5):
@@ -672,7 +672,7 @@ def main(version: str, dataroot: str, outdir_base: str,
             'has_pa': True,
         }
 
-    # full = 所有 nuScenes 帧
+    # full = all nuScenes samples
     all_full = {}
     for sample in nusc.sample:
         st = sample['token']
@@ -710,7 +710,7 @@ def main(version: str, dataroot: str, outdir_base: str,
 
     print("\n[4/5] 复制文件...")
     if not no_copy:
-        for st in tqdm(all_full, desc="传感器文件"):
+        for st in tqdm(all_full, desc="Copying sensor files"):
             try:
                 copy_sensor_files(nusc, st, out / 'full', dataroot)
             except Exception as ex:
@@ -735,7 +735,7 @@ def main(version: str, dataroot: str, outdir_base: str,
             print(f"  [WARN] {tok[:8]}: {ex}")
     print(f"  预览图已保存至 {vis_dir}/")
 
-    # 统计
+    # statistics
     type_c = {0: 0, 1: 0, 2: 0}
     k_dist = {}
     for labels in pos_labels.values():

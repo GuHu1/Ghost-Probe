@@ -1,37 +1,23 @@
 """
 PA_gen_v2/trajectory.py
 =====================
-Fixes a hidden assumption that used to live in ghost_vehicle_miner.py:
+Trajectory interpolation for ghost-vehicle lookback analysis.
 
-    if lb_xyz_global is None:
-        # Vehicle was not annotated in this lookback frame.
-        # Treat as "effectively in OSZ" (unseen = possibly hidden)
-        was_in_osz_per_frame.append(True)
+For a vehicle missing a direct annotation in a lookback frame, we must
+ distinguish three cases:
 
-That line conflated three different situations under one guess:
+  (a) KNOWN: exact annotation exists at that timestamp.
+  (b) INTERPOLATED: the timestamp falls between two known annotations of
+      the same track -> linearly interpolate and let the caller verify
+      the position is still inside the BEV grid.
+  (c) NO_EVIDENCE: timestamp is before track start or after track end ->
+      no occlusion evidence either way; the caller must drop this frame
+      instead of guessing.
 
-  (a) the vehicle genuinely has ~0% visibility at that frame. nuScenes
-      annotators still box objects down to ~40% visibility (vis=1), so a
-      real annotation gap WHILE THE TRACK CONTINUES ON BOTH SIDES usually
-      does mean "fully invisible right now" -> real occlusion evidence.
-  (b) the vehicle's track hasn't started yet, or already ended, at that
-      timestamp. It may not even exist in the scene there. This is NOT
-      evidence of occlusion — it's simply no information.
-  (c) the vehicle was outside our BEV grid at that moment. Also not
-      evidence of occlusion, just outside our sensing range.
-
-Blindly treating all three as "occluded" inflates positive ghost-vehicle
-events with false positives — e.g. a car that simply drove out of range
-gets mined as "emerged from a shadow" even though nothing occluded it.
-
-The fix implemented here: build each instance's FULL annotation chain
-(not just the k-frame lookback window used by the miner), and for any
-lookback frame with no direct annotation, ask whether the query timestamp
-falls BETWEEN two known chain entries (bracketed -> case a, interpolate a
-position and let the caller re-verify it's within BEV range) or outside
-the track's known span entirely (case b -> "no evidence", explicitly
-distinguishable from both True and False so the caller can exclude it
-from both the positive and negative evidence counts instead of guessing).
+This avoids conflating "genuinely occluded while the track continues",
+"track hasn't started / already ended", and "object is out of sensing
+range", which would otherwise inflate ghost-vehicle positives with false
+events (e.g. a car that simply drove out of range).
 
 Every function here is a pure function of its arguments (no nuScenes
 network/disk calls inside locate_at_time) so it's cheap to unit test in
@@ -54,7 +40,7 @@ def build_instance_trajectories(nusc, instance_tokens) -> Dict[str, Trajectory]:
     """
     For each instance token, walk its FULL sample_annotation chain
     (first_annotation_token -> 'next' links — the same mechanism
-    preprocess/create_pa_labels_mini.py already uses to build per-vehicle
+    PA_gen_v1/create_pa_labels_mini.py already uses to build per-vehicle
     tracks) and record every frame where it has a real annotation.
 
     This is independent of any lookback window: the point of building the

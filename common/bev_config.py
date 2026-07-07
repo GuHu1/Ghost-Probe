@@ -55,15 +55,15 @@ _nx_pre = int(round((BEV_RANGE_X0Y0X1Y1[2] - BEV_RANGE_X0Y0X1Y1[0]) / BEV_RESOLU
 _ny_pre = int(round((BEV_RANGE_X0Y0X1Y1[3] - BEV_RANGE_X0Y0X1Y1[1]) / BEV_RESOLUTION_M))
 assert _nx_osz == _ny_osz == _nx_pre == _ny_pre, (
     "BEV grid must come out square and identical across conventions — "
-    f"got OSZ=({_nx_osz},{_ny_osz}) preprocess=({_nx_pre},{_ny_pre}). "
+    f"got OSZ=({_nx_osz},{_ny_osz}) PA_gen_v1=({_nx_pre},{_ny_pre}). "
     "This should be impossible unless BEV_EXTENT_M/BEV_RESOLUTION_M were "
     "hand-edited inconsistently above."
 )
 
 BEV_NX     = _nx_osz          # cells along ego-x (forward)
 BEV_NY     = _ny_osz          # cells along ego-y (left)
-BEV_SIZE   = BEV_NX           # filter/'s name for the same quantity (square grid)
-BEV_CENTER = BEV_SIZE // 2    # pixel index of ego, filter/'s convention
+BEV_SIZE   = BEV_NX           # PA_gen_v2/'s name for the same quantity (square grid)
+BEV_CENTER = BEV_SIZE // 2    # pixel index of ego, PA_gen_v2/'s convention
 
 
 def describe() -> str:
@@ -94,6 +94,6 @@ def pixel_to_bev_coords(col: int, row: int):
 if __name__ == '__main__':
     print(describe())
     print(f"  BEV_RANGE_XYXY      = {BEV_RANGE_XYXY}   (OSZ/)")
-    print(f"  BEV_RANGE_X0Y0X1Y1  = {BEV_RANGE_X0Y0X1Y1}   (preprocess/)")
+    print(f"  BEV_RANGE_X0Y0X1Y1  = {BEV_RANGE_X0Y0X1Y1}   (PA_gen_v1/)")
     print(f"  BEV_RANGE_M         = {BEV_RANGE_M}, BEV_SIZE={BEV_SIZE}, "
-          f"BEV_CENTER={BEV_CENTER}   (filter/)")
+          f"BEV_CENTER={BEV_CENTER}   (PA_gen_v2/)")

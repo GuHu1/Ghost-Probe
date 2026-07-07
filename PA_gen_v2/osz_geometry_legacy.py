@@ -206,6 +206,6 @@ def pixel_to_bev_coords(col: int, row: int) -> Tuple[float, float]:
 
 if __name__ == '__main__':
     print("This is the legacy, no-longer-active OSZ implementation.")
-    print("Run filter/osz_source_viz.py instead for the current pipeline's "
+    print("Run PA_gen_v2/osz_source_viz.py instead for the current pipeline's "
           "single-sample OSZ sanity check (OSZ/modules/ray_casting.py via "
           "osz_source.py).")

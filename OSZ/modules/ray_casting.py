@@ -18,53 +18,21 @@ def build_bev_occ_from_voxel_cast(
     caster: "RayCaster3D",
 ) -> np.ndarray:
     """
-    Correct way to build the BEV obstacle map: run the per-camera 3D voxel
-    cast (RayCaster3D.cast), height max-pool each camera's result, then
-    take the UNION across cameras.
+    Build a solid BEV obstacle map by per-camera 3D voxel casting.
 
-    RayCaster3D.cast now returns OCCLUDER SURFACE voxels — voxels whose
-    distance from the camera matches the measured depth (i.e. a real
-    object surface sits there). This is fundamentally different from
-    marking "shadow" voxels (voxels further than the measured depth),
-    which would re-encode 3D occlusion information into bev_occ and cause
-    a runaway chain reaction once fed into the 2D ray casting stage below
-    (every occluded background point would become a new "wall").
+    Each camera's cast returns OCCLUDER SURFACE voxels (where a physical
+    surface actually sits), not shadow voxels. Max-pooling these along the
+    height axis and unioning across cameras gives bev_occ — the set of
+    true obstacles. Occlusion shadow is computed separately by cast_osz_2d
+    over this solid map, so shadows never become new "walls".
 
-    bev_occ must represent ONLY where physical obstacles actually sit —
-    finite-depth, finite-extent objects like cars, walls, pedestrians.
-    The "what's behind them" computation belongs exclusively to the 2D
-    ego-centric ray casting stage (cast_osz_2d), which is the only place
-    occlusion shadow should be computed.
-
-    Why this matters (and why the old point-reprojection method was wrong):
-    --------------------------------------------------------------------
-    The voxel cast compares, for EVERY voxel center in 3D space, its
-    distance from the camera against the MEASURED depth at the pixel it
-    projects to. A voxel is marked "occluder surface" only if the measured
-    depth at its corresponding pixel closely matches its own distance —
-    i.e. this voxel IS the physical surface the camera is looking at.
-
-    This is fundamentally different from re-projecting depth-map PIXELS
-    into 3D points and binning them into a BEV grid. Camera rays diverge
-    with range: two adjacent pixels close to the camera land in adjacent
-    BEV cells, but the same two adjacent pixels far from the camera can
-    land many cells apart — punching holes in what is actually a solid
-    wall. The voxel-cast method has no such gap because it queries every
-    voxel directly rather than relying on point density.
-
-    It also naturally preserves "see-through" gaps between objects (e.g.
-    two parked cars with a sliver of visible road between them): a voxel
-    behind that sliver will see a LARGER measured depth (because the
-    camera ray through that pixel actually reaches the background), so it
-    will correctly NOT match any nearby voxel's distance and will NOT be
-    marked as an occluder. A surrounded-by-cars scene will therefore
-    correctly mark only the cars themselves as obstacles — NOT everything
-    behind them — leaving the 2D ray casting stage to correctly compute
-    finite-depth shadows behind each finite-size car.
+    The voxel cast avoids the range-dependent gaps of point-density
+    binning: it queries every voxel directly against the measured depth at
+    the pixel it projects to, regardless of how far the surface is.
 
     Returns:
         bev_occ : (nx, ny) bool — union of all cameras' occluder-surface
-                  BEV occupancy (the obstacles themselves, not shadows)
+                  BEV occupancy (obstacles, not shadows)
     """
     nx, ny = caster.nx, caster.ny
     bev_occ = np.zeros((nx, ny), dtype=bool)
@@ -151,16 +119,12 @@ def compute_osz_from_ego_raycasting(
     caster: "RayCaster3D",
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Full OSZ pipeline, 3D-first as required:
+    Full OSZ pipeline: 3D voxel cast → solid BEV occupancy → 2D ray casting.
 
-      Step 1 (3D):  per-camera voxel cast (depth-vs-distance comparison)
-                    → solid per-camera BEV occupancy → union across cameras
-      Step 2 (2D):  ego-centric 360° ray casting over the solid BEV map
-                    → everything behind the first occluder is OSZ
-
-    This replaces the old point-reprojection method, which produced sparse,
-    gap-ridden bev_occ grids and therefore "dotted line" OSZ output instead
-    of solid contiguous shadow regions.
+      Step 1 (3D): per-camera voxel cast -> solid per-camera BEV occupancy
+                   -> union across cameras.
+      Step 2 (2D): ego-centric 360° ray casting over the solid BEV map
+                   -> everything behind the first occluder is OSZ.
 
     Returns:
         osz_mask : (nx, ny) bool — ego-centric occlusion shadow zone
@@ -225,36 +189,21 @@ class RayCaster3D:
         surface_tolerance: float = None,
     ) -> np.ndarray:
         """
-        Returns V_occ: (nx, ny, nz) bool array.
+        Returns V_occ: (nx, ny, nz) bool array marking OCCLUDER SURFACES.
 
-        IMPORTANT SEMANTIC FIX:
-        ------------------------
-        This must mark OCCLUDER SURFACE voxels (where a physical object's
-        surface actually sits), NOT "shadow" voxels (voxels that are
-        themselves behind something). The old version incorrectly computed
-        shadow voxels here, which when max-pooled to BEV and then fed into
-        a SECOND round of 2D ray casting, caused 3D shadows to be treated
-        as new 2D walls — producing a runaway chain reaction where every
-        occluded background point became a "wall" that cast its own further
-        shadow, rapidly swallowing the entire BEV grid in dense scenes
-        (e.g. "surrounded by cars").
+        A voxel is occupied only if the measured depth at the pixel it
+        projects to is approximately equal to the voxel's own distance from
+        the camera (within surface_tolerance). This identifies real physical
+        surfaces, not shadows.
 
-        The correct 3D role is narrow and simple: for every voxel, check
-        if the MEASURED depth at the pixel it projects to is approximately
-        EQUAL to the voxel's own distance from the camera (within
-        surface_tolerance). That means a real physical surface sits at
-        this voxel — this is the occluder itself, a finite-depth object.
-        Voxels FAR BEHIND the measured surface are simply unobserved
-        (unknown), not "shadow" — that distinction is only meaningful in
-        the 2D ego-centric ray casting stage, which already correctly
-        computes "behind the first occluder along this ray" using ONLY
-        true occluder positions.
+        Shadow computation belongs to cast_osz_2d, which traces rays over
+        this solid occupancy map. Keeping the two stages separate prevents
+        3D shadows from being treated as new 2D walls.
 
         Args:
             surface_tolerance: voxels within this distance (metres) of the
                 measured depth are considered "on the surface". Defaults
-                to one BEV cell's diagonal, since z_res/bev_res define our
-                voxel granularity.
+                to one BEV cell's diagonal.
         """
         if surface_tolerance is None:
             surface_tolerance = max(self.bev_res, self.z_res) * 1.5

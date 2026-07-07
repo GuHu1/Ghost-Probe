@@ -11,25 +11,12 @@ For each event we draw:
     visible, gray x = no evidence either way (see PA_gen_v2/trajectory.py)
   - Trajectory line through the confirmed/interpolated positions
 
+Plotting is done entirely in metric ego coordinates to avoid pixel-index
+rounding and axis-order mistakes.
+
 Karpathy rule: if you cannot look at the output and immediately see that
 it makes geometric sense, the mining logic is wrong. Do NOT proceed to
 model training without this visual check.
-
-Changes vs. the original version
----------------------------------
-1. OSZ now comes from osz_source.py (OSZ/modules/ray_casting.py), not the
-   old PA_gen_v2/osz_geometry.py.
-2. Plotting is done entirely in METRIC ego coordinates (imshow with
-   extent=, matplotlib axis limits in metres) instead of manually
-   computed pixel row/col indices. This removes a whole class of
-   pixel-rounding / axis-order bugs — see osz_source.py's module
-   docstring for why OSZ's (i,j) convention and the old PA_gen_v2/'s
-   (row,col) convention are transposed relative to each other.
-3. --dataroot is required; --out_pos/--out_neg/--events default inside
-   this repo (PA_gen_v2/output/) instead of a hardcoded /home/claude/... path.
-4. was_in_osz entries can now be True / False / None (see
-   ghost_vehicle_miner.py) — None is drawn as a gray '?' marker instead
-   of being coerced into a color that implies false certainty.
 """
 
 import sys

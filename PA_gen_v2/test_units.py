@@ -2,28 +2,15 @@
 test_units.py
 -------------
 Unit tests for coordinate transforms, OSZ-source plumbing, and the
-trajectory-interpolation fix. Run this FIRST before touching any real
+trajectory-interpolation logic. Run this FIRST before touching any real
 nuScenes data.
 
 Karpathy: if your unit tests pass but your output looks wrong, you have a
 bug in the test. If your output looks right but tests fail, you have a
 bug in the code. Either way, fix it before moving on.
 
-Changes vs. the original version
----------------------------------
-- Tests now target osz_source.py (OSZ/modules/ray_casting.py) instead of
-  the old PA_gen_v2/osz_geometry.py.
-- New: test_osz_source_ij_convention — an intentionally ASYMMETRIC
-  synthetic occluder (different extent in x vs y) that would catch a
-  transposed-axis bug the way a symmetric wall test cannot (see
-  osz_source.py's module docstring for why this axis order is a real
-  risk here).
-- New: tests for PA_gen_v2/trajectory.py's locate_at_time, covering the
-  KNOWN / INTERPOLATED / NO_EVIDENCE cases that replace the old
-  "unannotated lookback frame = assume occluded" shortcut.
-- sys.path no longer hardcodes /home/claude/phantom_agent; it's computed
-  from this file's own location so the test suite works regardless of
-  where the repo is checked out.
+sys.path is computed from this file's own location so the test suite
+works regardless of where the repo is checked out.
 """
 
 import sys

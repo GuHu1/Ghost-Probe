@@ -33,33 +33,12 @@ Negative samples are also generated: frames where a vehicle is visible in
 the current frame AND has a CONFIRMED-visible verdict in every one of the
 k lookback frames (no unknowns, no OSZ involvement).
 
-Changes vs. the original version
----------------------------------
-1. OSZ now comes from OSZ/modules/ray_casting.py via osz_source.py,
-   instead of a second, independent LiDAR-binning implementation that
-   used to live in this file's import (PA_gen_v2/osz_geometry.py, now kept
-   only as PA_gen_v2/osz_geometry_legacy.py for reference — nothing in the
-   active pipeline imports it).
-2. The "unannotated lookback frame = assume occluded" shortcut is gone.
-   See PA_gen_v2/trajectory.py's module docstring for the full rationale;
-   in short, we now interpolate the instance's own trajectory to tell a
-   genuine occlusion gap apart from "the vehicle simply wasn't there /
-   was out of range", and drop frames we have no evidence for instead of
-   guessing True.
-3. --dataroot is a required CLI argument (no longer defaults to a path
-   that doesn't exist on your machine); --out defaults to a path inside
-   this repo (PA_gen_v2/output/) instead of a hardcoded /home/claude/... path.
-4. Occlusion decisions now use osz_source.get_pa_relevant_osz_for_sample()
-   (raw OSZ intersected with the nuScenes drivable area), not raw OSZ.
-   Raw geometric OSZ counts the shadow of buildings as occluded even
-   though no vehicle could ever be there, which in dense urban scenes
-   routinely covers 70-80%+ of the grid — see osz_source.py's and
-   OSZ/modules/drivable_filter.py's docstrings. Without this filter,
-   "confirmed occluded" would trigger on building shadows almost
-   everywhere, producing ghost-vehicle events that aren't geometrically
-   meaningful.
+OSZ is computed by OSZ/modules/ray_casting.py via osz_source.py. Occlusion
+decisions use PA-relevant OSZ (raw OSZ intersected with the nuScenes
+drivable area) so that building shadows do not count as phantom-vehicle
+candidate regions.
 
-Karpathy notes (kept from the original):
+Karpathy notes:
   - Print counts at every stage. Never trust a silent loop.
   - Assert coordinate transforms at known test cases.
   - Build lookup tables up front; don't query nuScenes in the inner loop.
@@ -75,7 +54,7 @@ from typing import List, Dict, Any, Optional, Tuple
 import pyquaternion
 from nuscenes.nuscenes import NuScenes
 
-_THIS_DIR   = Path(__file__).resolve().parent          # filter/ itself
+_THIS_DIR   = Path(__file__).resolve().parent          # PA_gen_v2/ itself
 _REPO_ROOT  = _THIS_DIR.parent                          # repo root, for common/, OSZ/
 for _p in (str(_REPO_ROOT), str(_THIS_DIR)):
     if _p not in sys.path:
@@ -223,7 +202,7 @@ def mine_ghost_events(
 
     # --- Build full trajectories for every vehicle instance up front ---
     # (needed to distinguish "genuinely occluded" gaps from "no evidence"
-    #  gaps — see filter/trajectory.py)
+    #  gaps — see PA_gen_v2/trajectory.py)
     vehicle_instance_tokens = {
         tok for tok, cat in inst_cat_map.items() if cat in VEHICLE_CATEGORIES
     }

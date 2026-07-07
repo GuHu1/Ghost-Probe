@@ -52,28 +52,19 @@ def densify_depth_map(depth_map: np.ndarray,
                       max_radius: int = 8,
                       depth_discontinuity_thresh: float = 1.5) -> np.ndarray:
     """
-    对稀疏深度图进行最近邻插值，并对深度不连续边界做保护。
+    Fill sparse depth map with nearest-neighbour interpolation while
+    preserving depth discontinuities.
 
-    朴素最近邻插值的问题
-    --------------------
-    如果直接对所有无效像素取最近的有效像素深度值，会在物体边缘产生"涂抹"
-    伪影：car 边缘外侧本属于背景的空洞像素，会被错误地填上 car 的深度值
-    （因为 2D 图像距离最近的有效点恰好在 car 表面上）。这会让 car 在深度图
-    里的轮廓比真实物理边界更宽，反投影到 3D 后 occluder voxel 也跟着被
-    横向拉伸，导致 2D ray casting 阶段把这个虚假的"加宽阴影角宽"投射出去
-    ——这正是"被多辆车包围时 OSZ 异常扩散覆盖远超车辆本身宽度的区域"的
-    根本原因之一。
+    Naive nearest-neighbour interpolation smears object boundaries: a
+    background hole next to a car can be filled with the car's depth
+    because its nearest valid pixel lies on the car surface. That widens
+    the car silhouette, inflates the occluder voxels after back-projection,
+    and makes OSZ spread far beyond the real vehicle width.
 
-    修复方法
-    --------
-    两阶段最近邻插值：
-      1. 先找到每个无效像素最近的 K 个有效像素（K=4）。
-      2. 如果这 K 个候选深度值彼此差异超过 depth_discontinuity_thresh
-         （说明该像素恰好处于深度不连续边界，比如 car 边缘与背景的交界），
-         则不插值，保持 0（未知），而不是随便选一个最近邻深度值。
-      3. 否则使用真正的最近邻深度值（K个候选中距离最近的那个）。
-
-    这样可以保证：car 的深度边界不会因为插值而"涂抹"扩散到背景区域。
+    Instead, for each invalid pixel we look at its K=4 nearest valid
+    neighbours. If their depths differ by more than
+    depth_discontinuity_thresh, the pixel sits on a depth edge and is left
+    unknown (0). Otherwise the closest neighbour's depth is used.
     """
     H, W = depth_map.shape
     valid = depth_map > 0
@@ -88,7 +79,7 @@ def densify_depth_map(depth_map: np.ndarray,
 
     tree = cKDTree(coords)
 
-    # 查询 K=4 个最近邻，用来检测该位置是否处于深度不连续边界
+    # query K=4 nearest neighbors to detect depth-discontinuity boundaries
     k_neighbors = min(4, len(coords))
     dist_k, idx_k = tree.query(grid_coords, k=k_neighbors)
     if k_neighbors == 1:
@@ -98,13 +89,13 @@ def densify_depth_map(depth_map: np.ndarray,
     values_k = values[idx_k]                          # (H*W, k) candidate depths
     depth_spread = values_k.max(axis=1) - values_k.min(axis=1)  # (H*W,)
 
-    # 最近邻（k=1）深度值和距离，作为默认插值结果
+    # nearest-neighbor (k=1) depth and distance are the default interpolation
     nearest_dist  = dist_k[:, 0]
     nearest_depth = values_k[:, 0]
 
-    # 判定该像素是否处于深度不连续区域：
-    # K 个最近有效像素的深度跨度超过阈值 → 该像素夹在两个不同深度的物体
-    # 之间（例如 car 边缘与背景交界），插值不可信，保持未知（0）。
+    # pixel is at a depth discontinuity if its K nearest valid neighbors span
+    # a large depth range, e.g. it sits between a car edge and the background.
+    # In that case interpolation is unreliable, so keep it unknown (0).
     is_discontinuous = depth_spread > depth_discontinuity_thresh
 
     dense = nearest_depth.copy()
@@ -112,11 +103,11 @@ def densify_depth_map(depth_map: np.ndarray,
     dense = dense.reshape(H, W)
     dist_map = nearest_dist.reshape(H, W)
 
-    # 距离太远的不填充
+    # do not fill pixels far from any valid measurement
     dense_mask = dist_map <= max_radius
     dense = dense * dense_mask.astype(np.float32)
 
-    # 保留原始有效像素
+    # keep original valid pixels unchanged
     dense[valid] = depth_map[valid]
     return dense
 

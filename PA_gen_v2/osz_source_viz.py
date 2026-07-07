@@ -1,40 +1,25 @@
 """
 osz_source_viz.py
 ------------------
-Single-sample OSZ sanity check for the ACTIVE pipeline (osz_source.py ->
-OSZ/modules/ray_casting.py). This replaces the old
-PA_gen_v2/osz_geometry.py's __main__ block, which visualized the legacy
-independent implementation instead.
+Single-sample OSZ sanity check for the active pipeline
+(osz_source.py -> OSZ/modules/ray_casting.py).
 
 This is step 2 of run_pipeline.py: "look at one frame before mining the
 whole dataset." Three things get checked visually:
 
-  1. Basic plumbing sanity (occupancy | raw OSZ) — the same kind of check
-     the old osz_geometry.py did, just sourced from OSZ/ instead.
+  1. Basic plumbing sanity (occupancy | raw OSZ).
 
   2. Drivable-area filtering (raw OSZ | drivable area | PA-relevant OSZ):
-     raw geometric OSZ counts the shadow of buildings as occluded even
-     though no vehicle could ever be there — in dense urban scenes this
-     routinely covers 70-80%+ of the grid, which is EXPECTED (see
-     OSZ/modules/drivable_filter.py and osz_source.py's docstrings), not
-     a sign anything is broken. PA-relevant OSZ = raw OSZ ∩ drivable area
-     is what ghost_vehicle_miner.py actually uses for occlusion
-     decisions. This panel set lets you see the before/after on one
-     frame instead of just trusting the percentage.
+     raw geometric OSZ counts building shadows as occluded — in dense
+     urban scenes this routinely covers 70-80%+ of the grid, which is
+     expected (see OSZ/modules/drivable_filter.py and osz_source.py's
+     docstrings). PA-relevant OSZ = raw OSZ ∩ drivable area is what
+     ghost_vehicle_miner.py actually uses for occlusion decisions.
 
-  3. OSZ-vs-GT agreement: nuScenes ground-truth vehicle boxes for this
-     sample are overlaid, color-coded by whether PA-relevant OSZ marks
-     their center as occluded. Red box = GT says a vehicle is there and
-     it sits in a plausible-but-occluded (drivable, shadowed) spot —
-     a genuine phantom-vehicle candidate. Green box = GT vehicle sits
-     somewhere PA-relevant OSZ correctly leaves clear.
-
-     Note: OSZ/run_osz_pipeline.py's plot_gt_osz (in
-     OSZ/visualize/bev_viz.py) does a related but fuller check on the
-     same PA-relevant OSZ concept, with more decoration (grid lines,
-     phantom-candidate legend, etc). Use that when you want the full
-     picture; use this script when you just want a fast single-sample
-     check from PA_gen_v2/'s own pipeline.
+  3. OSZ-vs-GT agreement: nuScenes ground-truth vehicle boxes overlaid,
+     color-coded by whether PA-relevant OSZ marks their center as
+     occluded. Red box = genuine phantom-vehicle candidate; green box =
+     GT vehicle in a region PA-relevant OSZ correctly leaves clear.
 
 Usage:
   python osz_source_viz.py --dataroot /data/sets/nuscenes --version v1.0-mini --sample_idx 5

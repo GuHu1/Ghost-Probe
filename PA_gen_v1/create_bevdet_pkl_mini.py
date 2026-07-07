@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
 """
-create_bevdet_pkl_mini.py  —  v1.0-mini 版
-==========================================================
-不依赖 BEVNeXt 内部的 create_data_bevdet.py，
-直接生成 BEVDet 格式的 pkl，可被 NuScenesDataset 直接加载。
+create_bevdet_pkl_mini.py
+=========================
+v1.0-mini split entry point for BEVDet-format .pkl generation.
 
-运行（在任意目录，不需要进入 BEVNeXt）：
+Does not depend on BEVNeXt's internal create_data_bevdet.py; directly
+produces pkl files that NuScenesDataset can load.
+
+Usage (can run from any directory):
   python create_bevdet_pkl_mini.py
   python create_bevdet_pkl_mini.py --dataroot /data/sets/nuscenes \
                                    --out_dir /data/output/mini_pkls
 
-输出：
+Output:
   OUT_DIR/
     bevdet-nuscenes-mini-train.pkl
     bevdet-nuscenes-mini-val.pkl
 
-实现说明：
-  所有数据处理逻辑已抽取到 `bevdet_pkl_common.py`。
-  本文件仅保留 v1.0-mini split 专用的版本、路径和 pkl 文件名。
+Implementation note:
+  All data processing lives in `bevdet_pkl_common.py`. This file only keeps
+  the v1.0-mini-specific version, paths, and pkl filenames.
 """
 
 from nuscenes.utils.splits import mini_train, mini_val
@@ -26,7 +28,7 @@ from bevdet_pkl_common import parse_and_run
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  ★ 配置区（mini 版唯一需要改的地方）
+#  Configuration — only edit here for the mini split
 # ═══════════════════════════════════════════════════════════════════════════
 DATAROOT = "/data/sets/nuscenes"
 OUT_DIR  = "./output/bevdet_pkls"

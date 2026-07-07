@@ -1,78 +1,30 @@
 """
 PA_gen_v2/osz_source.py
 =====================
-Bridges the ghost-vehicle mining pipeline (this folder) to OSZ/'s
-occlusion-shadow-zone computation, instead of PA_gen_v2/ maintaining a
-second, independent implementation.
+Bridge between PA_gen_v2/ (ghost-vehicle mining) and OSZ/'s geometric
+occlusion-shadow-zone computation.
 
-Why this file exists
----------------------
-PA_gen_v2/ used to have its own osz_geometry.py: raw LiDAR points binned
-directly into a BEV grid (a simple height-clip, no camera reprojection),
-then a 2D ray cast over that grid. OSZ/modules/ray_casting.py does this
-more carefully — per-camera 3D voxel casting against the actual MEASURED
-depth to find true occluder SURFACES (see that module's docstring for why
-naive point-density binning creates range-dependent gaps), height-gated
-to the vehicle-body band, and only THEN a 2D ego-centric ray cast over
-the resulting solid occupancy map.
+This module is the single entry point for OSZ inside PA_gen_v2/. It wraps
+OSZ/modules/ray_casting.py and the optional drivable-area filter, caches
+per-frame results, and exposes coordinate helpers that use OSZ/'s (i, j)
+axis convention:
 
-The user's instruction: OSZ/ is meant to be the shared source of truth
-that other modules consume. So PA_gen_v2/ now calls into it directly.
-osz_geometry.py is kept in this folder for reference only, renamed
-osz_geometry_legacy.py, and nothing in the active pipeline imports it —
-see that file's docstring.
-
-get_osz_for_sample() below is a drop-in replacement for the old
-PA_gen_v2/osz_geometry.get_osz_for_sample: same 2-tuple return, same
-conceptual meaning, so ghost_vehicle_miner.py / visualize_events.py only
-needed an import-line change, not a rewrite.
-
-Drivable-area filtering (PA-relevant OSZ)
-------------------------------------------
-Raw geometric OSZ counts EVERYTHING behind an occluder as shadow,
-including the far side of buildings a vehicle could never physically
-occupy. In dense urban scenes this routinely makes raw OSZ cover 70-80%+
-of the BEV grid — see OSZ/modules/drivable_filter.py's module docstring
-and this repo's README for why that is EXPECTED, not a bug, and why
-OSZ/run_osz_pipeline.py has a dedicated stage (4c) that intersects raw
-OSZ with the nuScenes HD map's drivable area before treating it as a
-phantom-vehicle candidate region.
-
-PA_gen_v2/ initially skipped that stage (get_osz_for_sample() below only
-does the raw geometric computation). That was a real gap, not a
-deliberate simplification: ghost-vehicle mining cares about "could a
-vehicle plausibly be hidden here", and a shadow cast by a building onto
-another building's footprint can never contain a vehicle. Use
-get_pa_relevant_osz_for_sample() (below) instead of get_osz_for_sample()
-wherever the result feeds a vehicle-occlusion decision — which is what
-ghost_vehicle_miner.py now does.
-
-get_osz_for_sample() itself is left returning the RAW mask and kept as a
-separate, still-useful function: osz_source_viz.py uses it to show the
-before/after difference the drivable filter makes on a single frame.
-
-Coordinate convention — READ THIS BEFORE TOUCHING INDICES
-------------------------------------------------------------
-OSZ/ arrays are shape (nx, ny) with indexing='ij':
     axis-0 = ego-x (forward),  axis-1 = ego-y (left)
-    i.e.  mask[i, j]  where  i = ego-x index,  j = ego-y index
+    mask[i, j]  where  i = ego-x index,  j = ego-y index
 
-PA_gen_v2/'s OLD osz_geometry.py used the opposite, image-style convention:
-    mask[row, col]  where  row = ego-y index,  col = ego-x index
+Swapping these indices silently transposes the OSZ mask because the grid
+is square; use only bev_xy_to_ij() / ij_to_bev_xy() below to avoid that
+mistake.
 
-Because the grid is square, swapping these two conventions by accident
-does NOT crash — it silently mirrors/transposes the OSZ mask along the
-diagonal. That is exactly the kind of bug that "looks like it's working"
-until someone overlays it on GT boxes and the shadow is rotated 90° from
-where it should be.
+Main functions:
+  - get_osz_for_sample()            : raw geometric OSZ (for visualization)
+  - get_pa_relevant_osz_for_sample() : raw OSZ ∩ drivable area (use this for
+                                      vehicle-occlusion decisions)
+  - get_drivable_mask_for_sample()  : nuScenes HD-map drivable area
 
-To make this impossible to get wrong by habit, this module does NOT
-expose a col/row-style helper. It exposes bev_xy_to_ij() / ij_to_bev_xy()
-using OSZ's own (i, j) naming, and every docstring below says explicitly
-"index as mask[i, j]". test_units.py has a regression test
-(test_osz_source_ij_convention) that builds an intentionally asymmetric
-synthetic occluder and would fail loudly if this axis order were ever
-flipped.
+Raw geometric OSZ can cover 70-80%+ of the BEV grid in dense urban scenes
+because it counts building shadows; that is expected, not a bug. Phantom-
+vehicle mining must use PA-relevant OSZ.
 """
 
 import sys
@@ -122,7 +74,7 @@ except ImportError as _e:
 # knob (common/bev_config.py) since it's a different axis (vertical, not
 # the ground-plane cell size) — kept here as an explicit, visible constant
 # rather than a buried default, matching OSZ/run_osz_pipeline.py's CLI
-# defaults so filter/ and OSZ/ agree on what counts as "vehicle body".
+# defaults so PA_gen_v2/ and OSZ/ agree on what counts as "vehicle body".
 Z_MIN = 0.3
 Z_MAX = 2.2
 Z_RES = 0.3
@@ -161,11 +113,11 @@ _loaders: Dict[Tuple[str, str], NuScenesOSZLoader] = {}
 
 def _get_loader(nusc) -> NuScenesOSZLoader:
     """
-    filter/'s call sites already hold a `nusc` (NuScenes) object (built
-    once in each script's main()). Rather than have osz_source.py build
-    its own second NuScenes instance from a dataroot string (doubling
-    load time and memory), we wrap the caller's existing `nusc` in a
-    lightweight NuScenesOSZLoader shim that reuses it directly.
+    PA_gen_v2/'s call sites already hold a `nusc` (NuScenes) object
+    (built once in each script's main()). Rather than have osz_source.py
+    build its own second NuScenes instance from a dataroot string
+    (doubling load time and memory), we wrap the caller's existing `nusc`
+    in a lightweight NuScenesOSZLoader shim that reuses it directly.
     """
     key = id(nusc)
     if key not in _loaders:
@@ -205,8 +157,6 @@ def clear_cache() -> None:
 
 def get_osz_for_sample(nusc, sample_token: str) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Drop-in replacement for the old filter/osz_geometry.get_osz_for_sample.
-
     Returns RAW geometric OSZ — everything behind an occluder, including
     the far side of buildings a vehicle could never occupy. For vehicle-
     occlusion decisions (ghost-vehicle mining), use

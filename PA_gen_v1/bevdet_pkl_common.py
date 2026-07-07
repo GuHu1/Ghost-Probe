@@ -23,14 +23,14 @@ from nuscenes.nuscenes import NuScenes
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  通用配置
+#  Common config
 # ═══════════════════════════════════════════════════════════════════════════
 CAMERAS = [
     'CAM_FRONT', 'CAM_FRONT_LEFT', 'CAM_FRONT_RIGHT',
     'CAM_BACK', 'CAM_BACK_LEFT', 'CAM_BACK_RIGHT',
 ]
 LIDAR = 'LIDAR_TOP'
-N_SWEEPS = 9    # 与 BEVDet 默认一致
+N_SWEEPS = 9    # matches BEVDet default
 
 NUSCENES_CLASSES = [
     'car', 'truck', 'construction_vehicle', 'bus', 'trailer',
@@ -56,10 +56,10 @@ CAT2CLS = {
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  工具
+#  Utilities
 # ═══════════════════════════════════════════════════════════════════════════
 def get_lidar_velocity(nusc, ann_token):
-    """全局系速度 (vx,vy)，变换到 LiDAR 系"""
+    """Global-frame velocity (vx, vy) transformed to LiDAR frame."""
     ann = nusc.get('sample_annotation', ann_token)
     p, n = ann['prev'], ann['next']
     if not (p and n):
@@ -72,22 +72,22 @@ def get_lidar_velocity(nusc, ann_token):
     if dt <= 0 or dt > 1.5:
         return np.array([np.nan, np.nan])
     vel_g = (np.array(an['translation']) - np.array(ap['translation'])) / dt
-    return vel_g[:2]   # BEVDet 存全局速度 (vx,vy)
+    return vel_g[:2]   # BEVDet stores global (vx, vy)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  单帧 info 构建
+#  Per-sample info builder
 # ═══════════════════════════════════════════════════════════════════════════
 def fill_info(nusc, sample):
     """
-    构建单个 sample 的 BEVDet info dict。
-    格式与 BEVDet nuscenes_converter.py 的 _fill_trainval_infos 完全一致。
+    Build a single sample's BEVDet info dict.
+    Format matches BEVDet's nuscenes_converter.py _fill_trainval_infos.
     """
-    # ── LiDAR 参考帧 ───────────────────────────────────────────
+    # ── LiDAR reference frame ──────────────────────────────────
     lidar_sd = nusc.get('sample_data', sample['data'][LIDAR])
     lidar_cs = nusc.get('calibrated_sensor', lidar_sd['calibrated_sensor_token'])
     lidar_pose = nusc.get('ego_pose', lidar_sd['ego_pose_token'])
-    lidar_path = str(Path(lidar_sd['filename']))   # 相对路径
+    lidar_path = str(Path(lidar_sd['filename']))   # relative path
 
     e2g_r = np.array(lidar_pose['rotation'])
     e2g_t = np.array(lidar_pose['translation'])
@@ -122,7 +122,7 @@ def fill_info(nusc, sample):
         })
         tok_prev = sw['prev']
 
-    # ── 相机 ────────────────────────────────────────────────────
+    # ── Cameras ────────────────────────────────────────────────
     cams = {}
     for cam in CAMERAS:
         cam_sd = nusc.get('sample_data', sample['data'][cam])
@@ -150,7 +150,7 @@ def fill_info(nusc, sample):
             'timestamp': cam_sd['timestamp'],
         }
 
-    # ── GT boxes ────────────────────────────────────────────────
+    # ── GT boxes ───────────────────────────────────────────────
     R_e2g = Quaternion(e2g_r).rotation_matrix
     R_l2e = Quaternion(l2e_r).rotation_matrix
 
@@ -209,7 +209,7 @@ def fill_info(nusc, sample):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  主程序
+#  Main
 # ═══════════════════════════════════════════════════════════════════════════
 def main(version: str, dataroot: str, out_dir: str,
          train_scenes: list, val_scenes: list,
@@ -237,7 +237,7 @@ def main(version: str, dataroot: str, out_dir: str,
         scene2split[sc_name] = 'val'
 
     train_infos, val_infos = [], []
-    for scene in tqdm(nusc.scene, desc="处理 scenes"):
+    for scene in tqdm(nusc.scene, desc="Processing scenes"):
         split = scene2split.get(scene['name'], None)
         if split is None:
             continue
@@ -262,10 +262,10 @@ def main(version: str, dataroot: str, out_dir: str,
     with open(val_pkl, 'wb') as f:
         pickle.dump({'infos': val_infos, 'metadata': {'version': version}}, f)
 
-    print("\n生成完成：")
-    print(f"  train: {len(train_infos)} 帧  → {train_pkl}")
-    print(f"  val:   {len(val_infos)} 帧  → {val_pkl}")
-    print("\nBEVNeXt config 中对应字段：")
+    print("\nDone:")
+    print(f"  train: {len(train_infos)} frames → {train_pkl}")
+    print(f"  val:   {len(val_infos)} frames → {val_pkl}")
+    print("\nCorresponding fields in BEVNeXt config:")
     print(f"  data_root = '{dataroot}/'")
     print(f"  ann_file  = '{train_pkl}'  # train")
     print(f"  ann_file  = '{val_pkl}'    # val")
