@@ -228,57 +228,79 @@ class NuScenesOSZLoader:
             yield from self._nuscenes_iter()
 
     # ── Real nuScenes ────────────────────────────────────────────────────────
+    def build_frame_for_token(self, sample_token: str) -> dict:
+        """
+        Build and return a single frame dict (the same shape __iter__ yields)
+        for the given sample_token, WITHOUT iterating the whole dataset.
+
+        This is the token-based entry point osz_source.py's _get_loader shim
+        uses: that shim wraps a caller-supplied NuScenes object via __new__
+        (so it doesn't re-open the nuScenes tables a second time) and only
+        sets self.nusc / self.cameras / self.img_h / self.img_w / self._use_mock
+        — it does NOT set self.samples. This method therefore looks up the
+        sample record directly via self.nusc.get('sample', sample_token)
+        rather than scanning self.samples, so it works on both the __init__
+        path (self.samples populated) and the shim path (self.samples absent).
+
+        Returns:
+            frame : {'sample_token': str, 'cameras': {cam_name: {...}}}
+            'cameras' is empty if no camera data could be loaded; callers
+            (get_osz_for_sample) check `if not cams` and raise a clear error.
+        """
+        sample = self.nusc.get('sample', sample_token)
+        frame = {'sample_token': sample['token'], 'cameras': {}}
+
+        # ── Load LiDAR (ego frame) ────────────────────────────────────
+        lidar_token = sample['data']['LIDAR_TOP']
+        lidar_sd = self.nusc.get('sample_data', lidar_token)
+        lidar_path = self.nusc.dataroot + '/' + lidar_sd['filename']
+        pc = LidarPointCloud.from_file(lidar_path)
+
+        T_lidar2ego = _get_transform(self.nusc, lidar_sd)
+        pts_h = np.concatenate(
+            [pc.points[:3].T, np.ones((pc.points.shape[1], 1))], axis=1
+        )
+        pts_ego = (T_lidar2ego @ pts_h.T).T[:, :3]  # (N, 3) ego frame
+
+        # ── Per-camera ────────────────────────────────────────────────
+        for cam_name in self.cameras:
+            if cam_name not in sample['data']:
+                continue
+            cam_token = sample['data'][cam_name]
+            cam_sd    = self.nusc.get('sample_data', cam_token)
+            T_cam2ego = _get_transform(self.nusc, cam_sd)
+            K         = _get_intrinsic(self.nusc, cam_token)
+
+            depth_sparse = project_lidar_to_camera(
+                pts_ego, K, T_cam2ego,
+                self.img_h, self.img_w,
+            )
+            depth_dense = densify_depth_map(depth_sparse)
+
+            # Load camera image
+            image = np.zeros((self.img_h, self.img_w, 3), dtype=np.uint8)
+            if PIL_AVAILABLE:
+                try:
+                    img_path = self.nusc.dataroot + '/' + cam_sd['filename']
+                    image = np.array(Image.open(img_path).convert('RGB'))
+                except Exception:
+                    pass
+
+            frame['cameras'][cam_name] = {
+                'depth_map': depth_dense,        # (H, W) metres, densified
+                'depth_map_sparse': depth_sparse,# (H, W) original sparse
+                'image':     image,              # (H, W, 3) RGB
+                'K':         K,                  # (3, 3)
+                'T_cam2ego': T_cam2ego,          # (4, 4)
+                'img_h':     self.img_h,
+                'img_w':     self.img_w,
+            }
+
+        return frame
+
     def _nuscenes_iter(self):
         for sample in self.samples:
-            frame = {'sample_token': sample['token'], 'cameras': {}}
-
-            # ── Load LiDAR (ego frame) ────────────────────────────────────
-            lidar_token = sample['data']['LIDAR_TOP']
-            lidar_sd = self.nusc.get('sample_data', lidar_token)
-            lidar_path = self.nusc.dataroot + '/' + lidar_sd['filename']
-            pc = LidarPointCloud.from_file(lidar_path)
-
-            T_lidar2ego = _get_transform(self.nusc, lidar_sd)
-            pts_h = np.concatenate(
-                [pc.points[:3].T, np.ones((pc.points.shape[1], 1))], axis=1
-            )
-            pts_ego = (T_lidar2ego @ pts_h.T).T[:, :3]  # (N, 3) ego frame
-
-            # ── Per-camera ────────────────────────────────────────────────
-            for cam_name in self.cameras:
-                if cam_name not in sample['data']:
-                    continue
-                cam_token = sample['data'][cam_name]
-                cam_sd    = self.nusc.get('sample_data', cam_token)
-                T_cam2ego = _get_transform(self.nusc, cam_sd)
-                K         = _get_intrinsic(self.nusc, cam_token)
-
-                depth_sparse = project_lidar_to_camera(
-                    pts_ego, K, T_cam2ego,
-                    self.img_h, self.img_w,
-                )
-                depth_dense = densify_depth_map(depth_sparse)
-
-                # Load camera image
-                image = np.zeros((self.img_h, self.img_w, 3), dtype=np.uint8)
-                if PIL_AVAILABLE:
-                    try:
-                        img_path = self.nusc.dataroot + '/' + cam_sd['filename']
-                        image = np.array(Image.open(img_path).convert('RGB'))
-                    except Exception:
-                        pass
-
-                frame['cameras'][cam_name] = {
-                    'depth_map': depth_dense,        # (H, W) metres, densified
-                    'depth_map_sparse': depth_sparse,# (H, W) original sparse
-                    'image':     image,              # (H, W, 3) RGB
-                    'K':         K,                  # (3, 3)
-                    'T_cam2ego': T_cam2ego,          # (4, 4)
-                    'img_h':     self.img_h,
-                    'img_w':     self.img_w,
-                }
-
-            yield frame
+            yield self.build_frame_for_token(sample['token'])
 
     # ── Synthetic mock (when no data available) ──────────────────────────────
     def _mock_iter(self):
