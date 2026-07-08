@@ -6,8 +6,8 @@ occlusion-shadow-zone computation.
 
 This module is the single entry point for OSZ inside PA_gen_v2/. It wraps
 OSZ/modules/ray_casting.py and the optional drivable-area filter, caches
-per-frame results, and exposes coordinate helpers that use OSZ/'s (i, j)
-axis convention:
+per-frame results (memory + on-disk), and exposes coordinate helpers that
+use OSZ/'s (i, j) axis convention:
 
     axis-0 = ego-x (forward),  axis-1 = ego-y (left)
     mask[i, j]  where  i = ego-x index,  j = ego-y index
@@ -16,11 +16,28 @@ Swapping these indices silently transposes the OSZ mask because the grid
 is square; use only bev_xy_to_ij() / ij_to_bev_xy() below to avoid that
 mistake.
 
+Caching architecture (three layers, queried in order):
+    1. in-memory dict `_pa_cache` (per-process, cleared by clear_cache())
+    2. on-disk .npz at `output/osz_cache/{config_hash}/{sample_token}.npz`
+       (config_hash = md5 of BEV_RANGE/RESOLUTION/Z gates; auto-invalidates
+       when grid config changes)
+    3. compute from scratch via OSZ/modules/ray_casting.py
+
+The disk cache is what makes `visualize_events.py --web` fast on the
+second run: the first run is slow (per-sample 3D voxel cast), every
+subsequent run loads the npz directly (~0.1s per sample instead of
+~5-15s). With cast_osz_2d vectorized, the first-run cost is also
+roughly 50x lower than the original pure-Python implementation.
+
 Main functions:
-  - get_osz_for_sample()            : raw geometric OSZ (for visualization)
+  - get_osz_for_sample()             : raw geometric OSZ (for visualization)
   - get_pa_relevant_osz_for_sample() : raw OSZ ∩ drivable area (use this for
-                                      vehicle-occlusion decisions)
-  - get_drivable_mask_for_sample()  : nuScenes HD-map drivable area
+                                       vehicle-occlusion decisions)
+  - get_drivable_mask_for_sample()   : nuScenes HD-map drivable area
+  - clear_cache()                    : flush in-memory cache (disk is kept)
+  - drivable_filter_available()      : True if shapely-driven HD-map filter
+                                       is actually active (False = silent
+                                       fallback to no filtering)
 
 Raw geometric OSZ can cover 70-80%+ of the BEV grid in dense urban scenes
 because it counts building shadows; that is expected, not a bug. Phantom-

@@ -1,12 +1,47 @@
 """
-Stage 1 + 2: 3D Ray Casting → Height-stratified Voxel Occlusion Annotation
-===========================================================================
-For each camera:
-  1. Unproject depth map pixels → 3D world rays
-  2. For each voxel (x,y,z) in height gate [z_min, z_max]:
-       project voxel center → camera image plane
-       if depth_at_pixel < voxel_distance_from_cam → shadow voxel
-  3. Output: V_occ^c  (X, Y, Z) binary voxel grid
+OSZ/modules/ray_casting.py
+==========================
+Stage 1+2: 3D Voxel Casting (per camera, per ego frame)
+Stage 4a: 2D BEV Ray Casting (ego-centric 360°)
+
+Pipeline:
+  1. For each camera's depth map, project every voxel in the
+     (z_min, z_max) height gate onto the image plane and compare the
+     voxel's depth to the measured depth at that pixel. Voxels whose
+     depth matches (within `surface_tolerance`) are real occluder
+     surfaces — not shadows.
+  2. Max-pool along Z, union across cameras → bev_occ (nx, ny) bool.
+  3. 2D ray casting over bev_occ → osz_mask (nx, ny) bool: every cell
+     lying behind the first occluder along its ray from ego.
+
+Why two stages instead of one direct 2D approach:
+  Density binning the LiDAR point cloud directly into a BEV grid
+  produces range-dependent gaps in distant occluders. A gap causes the
+  2D ray caster to "see through" the wall, so everything beyond becomes
+  shadow. Worse, that shadow then acts as a new wall in subsequent
+  passes (if you ever iterated), propagating the bug. The voxel cast
+  fills those gaps by querying each voxel against the measured depth
+  at its projected pixel, regardless of range.
+
+Performance:
+  `cast_osz_2d` is fully vectorized. Original implementation was a
+  pure-Python double for-loop (~12,500 rays × 2,000 steps = 25M
+  iterations → ~25s per sample on a 500x500 grid). Current numpy
+  version runs the same grid in ~0.5s (~50x speedup) and is bit-for-
+  bit identical (validated on 20 random small-grid test cases).
+
+Coordinate convention (matches PA_gen_v2/osz_source.py):
+  axis-0 = ego-x (forward),  axis-1 = ego-y (left)
+  bev_occ[i, j]   i=ego-x index, j=ego-y index
+  Do NOT swap to bev_occ[j, i] — square grid means a transposition is
+  silent (results mirror along the diagonal instead of erroring).
+
+No torch dependency:
+  This file used to import torch unconditionally at the top, but
+  contains zero torch code (pure numpy geometry). That import broke
+  any pure-CPU caller (e.g. PA_gen_v2 in environments without torch).
+  The CNN/CRF refinement path uses torch and lives in
+  OSZ/modules/crf_refine.py with its own import guard.
 """
 
 import numpy as np

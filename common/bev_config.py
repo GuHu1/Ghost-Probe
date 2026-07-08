@@ -20,6 +20,14 @@ Each consumer imports the flavor it already expects.
 
 To change the BEV cell size for the WHOLE project:
     edit BEV_RESOLUTION_M below, nothing else.
+
+Note on OSZ disk cache invalidation (PA_gen_v2/osz_source.py):
+    The on-disk .npz cache at `output/osz_cache/{config_hash}/` is keyed
+    by an md5 of (BEV_RANGE_XYXY, BEV_RESOLUTION_M, Z_MIN, Z_MAX, Z_RES).
+    Changing any of those here automatically switches the cache to a
+    new directory — old cached results are not deleted but will be
+    ignored. To reclaim disk space, manually remove
+    `PA_gen_v2/output/osz_cache/<old_hash>/`.
 """
 
 # ─────────────────────────────────────────────────────────────────────

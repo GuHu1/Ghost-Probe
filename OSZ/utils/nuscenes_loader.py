@@ -1,13 +1,20 @@
 """
+OSZ/utils/nuscenes_loader.py
+============================
 nuScenes Data Utilities
-=======================
+
 Provides:
   - NuScenesOSZLoader : iterates samples, returns per-camera depth maps,
                         intrinsics, extrinsics, and optional GT OSZ masks
                         (computed from LiDAR-based ray casting as pseudo-GT).
+  - build_frame(sample) / build_frame_for_token(sample_token):
+        single-frame camera-depth builders used by both the iterator
+        AND by external callers (PA_gen_v2/osz_source.py uses
+        build_frame_for_token to query one sample at a time without
+        iterating the whole dataset).
 
 nuScenes coordinate conventions
---------------------------------
+-------------------------------
   - All sensor poses are stored as  sensor → ego → global.
   - We work entirely in the EGO frame at each timestamp.
   - depth_map : LiDAR points projected onto each camera image, depth = z_cam.

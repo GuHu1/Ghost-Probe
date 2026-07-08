@@ -3,34 +3,52 @@ visualize_events.py
 -------------------
 Visualize mined ghost vehicle events — the most important debugging step.
 
-Two modes:
+Three modes (pick with CLI flag):
 
-  1. OFFLINE EXPORT (the original mode): render a grid of events to PNG via
+  1. OFFLINE EXPORT (no flag): render a grid of events to PNG via
      make_event_grid(). Headless, works anywhere (Agg or any backend;
-     savefig does not need a GUI).
+     savefig does not need a GUI). Fastest for batch QA.
 
-  2. INTERACTIVE EVENT BROWSER (new): an interactive 2x3 window that lets
-     you walk the event set with n/p/r/q and, crucially, shows each frame
-     in ITS OWN ego frame — so you can see at a glance:
-        - whether the car stayed inside OSZ the whole time,
-        - when it came out,
-        - whether OSZ moved between frames,
-        - whether ego turned (OSZ shape rotates relative to ego).
+  2. INTERACTIVE BROWSER (--browse): three sub-modes share the same
+     renderer (HeadlessEventBrowser._render) so the visuals are identical:
+       a. GUI (default if tkinter/Qt available): n/p/r/q keyboard
+          navigation in a matplotlib window
+       b. Headless (--headless): terminal stdin n/p/j/k/numbers/r/q,
+          each event saved to output/browser/event_XXXX.png so you can
+          flip through with any image viewer
+       c. Web gallery (--web): render all events to output/web/ and
+          build a browser-viewable index.html. ←/→/j/k keys. Most
+          recommended for reviewing many events; relies on the OSZ
+          disk cache for fast second-run load.
 
-     Layout:
+     All three render this 2x3 layout (each panel uses that frame's OWN
+     ego frame, ego at origin, showing the frame's OWN PA-relevant OSZ):
+
         +---------+---------+---------+
         |  t-4    |  t-3    |  t-2    |
         +---------+---------+---------+
         |  t-1    |   t     |  info   |
         +---------+---------+---------+
 
-     Each BEV panel draws that frame's OWN PA-relevant OSZ (raw OSZ ∩
-     drivable area — exactly what ghost_vehicle_miner.py used for every
-     was_in_osz decision), the ego marker at the origin, and the tracked
-     vehicle's position in that frame's ego coordinates. This is different
-     from visualize_event() (offline), which collapses every lookback
-     position into frame-t's ego frame — fine for a static summary, useless
-     for watching OSZ evolve over time.
+     Per-panel layers (zorder low->high):
+       - drivable area (dark green)
+       - voxel-cast obstacles (gray)
+       - PA-relevant OSZ (red)
+       - HD map lane boundaries (thin blue, from NuScenesMap)
+       - other scene vehicles (cyan BEV boxes with heading)
+       - pedestrians (yellow dots)
+       - the tracked vehicle (verdict-coloured box + white heading arrow)
+       - ego marker (white triangle) at frame's own origin
+
+     Why "own ego frame" per panel: each frame's OSZ is computed in
+     that frame's ego coordinates by osz_source (ego sits at the
+     origin every time). Plotting each panel in its own ego frame
+     therefore shows the TRUE per-frame OSZ geometry — you can watch
+     OSZ grow/shrink/rotate as ego moves and occluders shift.
+     Collapsing all frames into frame-t's ego frame (what
+     visualize_event() does for the offline grid) would warp every
+     other frame's OSZ and hide exactly the motion this browser
+     exists to reveal.
 
 All plotting is in metric ego coordinates to avoid pixel-index rounding
 and axis-order mistakes.

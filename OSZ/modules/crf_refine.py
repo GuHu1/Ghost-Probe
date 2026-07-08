@@ -1,6 +1,8 @@
 """
+OSZ/modules/crf_refine.py
+=========================
 Stage 4 (Optional Refinement): CRF Depth Modulation + Hierarchical Loss
-========================================================================
+
 Two independent components that can be used together or separately:
 
 A) CRFBoundaryRefiner
@@ -15,6 +17,13 @@ B) HierarchicalOSZLoss  (for training a learned boundary predictor)
        * Scale-invariant depth constraint (OBDCL-style, from MoDOT paper)
        * Laplacian pyramid boundary consistency  (coarse→fine)
    - Used to supervise a thin CNN that refines the geometric OSZ mask
+
+Optional dependency: this module is the ONLY file in OSZ/ that imports
+torch. All other modules in OSZ/ (ray_casting, drivable_filter,
+nuscenes_loader) are pure numpy and remain importable in torch-less
+environments (which is the default for PA_gen_v2 mining pipelines).
+If torch is not installed, importing this module will fail — the
+geometric-only pipeline keeps working.
 """
 
 import numpy as np

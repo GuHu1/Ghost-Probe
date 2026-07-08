@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """
+analyze_distances.py
+--------------------
 Distance-distribution analysis for Ghost-Probe positive (ghost) events.
 
 Reads the mined events JSON (no nuScenes devkit needed — only numpy +
@@ -13,6 +15,30 @@ matplotlib) and produces:
 Plus a data-driven threshold recommendation: finds the distance beyond
 which sample quality degrades (rising unknown ratio, falling OSZ overlap)
 and suggests a cutoff.
+
+Outputs:
+  - output/distance_analysis.png : 2x2 figure (histogram, count, unknown
+                                   ratio, OSZ overlap per distance bin)
+  - output/distance_analysis.csv : per-bin stats table
+  - terminal report              : cumulative retention + threshold
+                                   recommendation
+
+Threshold analysis logic:
+  Scan outward from the peak-quality bin (highest strong% among well-
+  populated bins) and flag the first distance where quality degrades
+  AND stays degraded for >= 2 consecutive bins:
+    - unknown ratio  >= 15%,  OR
+    - mean OSZ overlap < 2.0,  OR
+    - strong% (n_osz_frames >= 2) < 60%.
+  If no sustained cliff is found, the script reports "no hard cutoff
+  needed; degradation is gradual" and recommends 35-40m as a practical
+  balance (the typical nuScenes-mini empirical optimum — see PA_gen_v2
+  README for sample numbers).
+
+The near tail (closer than the peak) is NOT a degradation zone — close-
+range objects naturally have brief shadow overlap because they enter
+the visible region quickly; treating that as a quality cliff would
+falsely recommend a 0m threshold.
 
 Usage:
     python PA_gen_v2/analyze_distances.py [--events <json>] [--bin 5]
