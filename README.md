@@ -17,7 +17,7 @@ Ghost-Probe/
 │   └── bev_config.py        # 改一个数字，OSZ/PA_gen_v1/PA_gen_v2 全部联动
 │
 ├── OSZ/                     # 几何 OSZ 计算（相机深度 → 体素 → BEV 阴影区）
-│   ├── modules/             # ray_casting, drivable_filter, crf_refine
+│   ├── modules/             # ray_casting, drivable_filter
 │   ├── utils/               # nuscenes_loader
 │   ├── visualize/           # BEV / 相机可视化
 │   └── run_osz_pipeline.py
@@ -61,7 +61,6 @@ pip install -r requirements.txt
 | `shapely` | HD-map 可行驶区域过滤 | 否（缺则退化为不过滤） |
 | `tornado` | matplotlib WebAgg 后端 | 否（仅 --browse 浏览器模式需要） |
 | `tkinter` | matplotlib TkAgg 后端 | 通常随 CPython 自带 |
-| `torch` | CNN 边界精修 / `--train_cnn` | 否（纯几何 OSZ 不需要） |
 
 ---
 
@@ -172,9 +171,8 @@ python create_pa_labels_mini.py --dataroot /data/sets/nuscenes \
 
 | 文件 | 作用 |
 |---|---|
-| `OSZ/modules/ray_casting.py` | 3D 体素投射 + **向量化** 2D 自车射线投射（纯 numpy，无 torch 强依赖） |
+| `OSZ/modules/ray_casting.py` | 3D 体素投射 + **向量化** 2D 自车射线投射（纯 numpy） |
 | `OSZ/modules/drivable_filter.py` | 原始 OSZ ∩ HD-map 可行驶区域 = PA-relevant OSZ |
-| `OSZ/modules/crf_refine.py` | 可选 CNN/CRF 边界精修（依赖 torch） |
 | `OSZ/utils/nuscenes_loader.py` | 按 sample_token 构建单帧相机深度图、内外参 |
 | `OSZ/run_osz_pipeline.py` | 主入口，支持 `--mock`、CLI 覆盖 BEV 参数 |
 
@@ -253,7 +251,6 @@ python create_pa_labels_mini.py --dataroot /data/sets/nuscenes \
 ## 可选依赖的优雅降级
 
 - **缺少 `shapely`**：`drivable_filter.py` 无法加载，但几何 OSZ 仍可运行；PA-relevant OSZ 退化为原始 OSZ，并打印一次性警告。
-- **缺少 `torch`**：`crf_refine.py` 与 `--train_cnn` 不可用；纯几何 OSZ 与 PA_gen_v2 不受影响。
 - **缺少 `tornado`**：matplotlib WebAgg 后端不可用，GUI 浏览器自动尝试 TkAgg/QtAgg。
 - **缺少 `tkinter` / `Qt`**：GUI 浏览器自动降级为 headless 终端模式或 WebAgg。
 

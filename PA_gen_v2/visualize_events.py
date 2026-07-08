@@ -113,7 +113,7 @@ VERDICT_STYLE = {
     True:      ('#dc2626', 'o'),   # confirmed in OSZ  (red)
     False:     ('#2563eb', 'o'),   # confirmed visible (blue)
     None:      ('#6b7280', 'x'),   # no evidence (gray)
-    'emerged': ('#16a34a', '*'),   # emerged at frame t (green)
+    'emerged': ('#dc2626', '*'),   # emerged at frame t (red — the phantom)
 }
 
 
@@ -184,6 +184,28 @@ def _smooth_osz_mask(osz_mask: np.ndarray, iterations: int = 1) -> np.ndarray:
     return binary_dilation(osz_mask, iterations=iterations)
 
 
+def _solidify_obstacles(bev_occ: np.ndarray, iterations: int = 2) -> np.ndarray:
+    """Fill gaps in the voxel-cast obstacle mask for solid-looking rendering.
+
+    The voxel cast marks only surface voxels (where measured depth matches
+    voxel distance), so the resulting BEV mask is a thin shell rather than
+    a solid block. This makes walls and vehicles look like fragmented
+    "waves" instead of solid objects. A binary closing (dilate then erode)
+    fills internal gaps without expanding the outer boundary.
+
+    Args:
+        bev_occ: (nx, ny) bool obstacle mask from voxel cast.
+        iterations: closing iterations; 2 fills most gaps at 0.2m/cell.
+
+    Returns:
+        (nx, ny) bool closed obstacle mask.
+    """
+    if not _SCIPY_AVAILABLE or bev_occ is None or bev_occ.size == 0:
+        return bev_occ
+    from scipy.ndimage import binary_closing
+    return binary_closing(bev_occ, iterations=iterations)
+
+
 
 # ════════════════════════════════════════════════════════════════════
 # OFFLINE: single-event drawer (collapses all lookback into frame-t ego)
@@ -219,12 +241,13 @@ def visualize_event(nusc: NuScenes, event: Dict, ax: plt.Axes,
     # White background
     overlay[:] = _hex_to_rgb(PALETTE['panel_bg'])
     # Non-drivable ground (sidewalk / grass) — light grey / green
-    non_drivable = ~(drivable_mask | bev_occ)
+    bev_occ_solid = _solidify_obstacles(bev_occ)
+    non_drivable = ~(drivable_mask | bev_occ_solid)
     overlay[non_drivable] = _hex_to_rgb(PALETTE['grass'])
     # Road surface (drivable area) — dark grey
     overlay[drivable_mask] = _hex_to_rgb(PALETTE['road'])
     # Solid obstacles / voxel-cast surfaces — orange (the thing casting shadow)
-    overlay[bev_occ] = _hex_to_rgb(PALETTE['obstacle'])
+    overlay[bev_occ_solid] = _hex_to_rgb(PALETTE['obstacle'])
     # PA-relevant OSZ (black shadow). Smooth tiny holes for clean rendering.
     overlay[_smooth_osz_mask(osz_pa)] = _hex_to_rgb(PALETTE['osz'])
     ax.imshow(overlay, origin='lower', extent=extent)
@@ -238,7 +261,7 @@ def visualize_event(nusc: NuScenes, event: Dict, ax: plt.Axes,
 
     # Emerged vehicle position (frame t), already stored in metric ego xy
     ex, ey = event['emerge_bev_xy']
-    ax.plot(ey, ex, '*', color=PALETTE['tracked_arrow'], markersize=14,
+    ax.plot(ey, ex, '*', color=VERDICT_STYLE['emerged'][0], markersize=14,
             path_effects=[pe.withStroke(linewidth=2, foreground='white')],
             label='Emerged (t)')
     # NOTE: plotted as (ey, ex) not (ex, ey) — matplotlib's x-axis here is
@@ -296,7 +319,7 @@ def visualize_event(nusc: NuScenes, event: Dict, ax: plt.Axes,
         mpatches.Patch(color=_hex_to_rgb(PALETTE['road']), label='Drivable area (road)'),
         mpatches.Patch(color=_hex_to_rgb(PALETTE['obstacle']), label='Occluder (wall / vehicle)'),
         mpatches.Patch(color=_hex_to_rgb(PALETTE['osz']), label='PA-relevant OSZ'),
-        plt.Line2D([0],[0], marker='*', color=PALETTE['tracked_arrow'], markersize=8,
+        plt.Line2D([0],[0], marker='*', color=VERDICT_STYLE['emerged'][0], markersize=8,
                    linestyle='none', label='Emerged (t)'),
         plt.Line2D([0],[0], marker='o', color=VERDICT_STYLE[True][0], markersize=5,
                    linestyle='none', label='Lookback (confirmed in OSZ)'),
@@ -628,10 +651,11 @@ def _draw_frame_own_ego(ax, nusc, sample_token, instance_token,
     overlay = np.zeros((*bev_occ.shape, 3), dtype=np.float32)
     overlay[:] = _hex_to_rgb(PALETTE['panel_bg'])  # white base
     # Non-drivable ground (sidewalk / grass)
-    non_drivable = ~(drivable_mask | bev_occ)
+    bev_occ_solid = _solidify_obstacles(bev_occ)
+    non_drivable = ~(drivable_mask | bev_occ_solid)
     overlay[non_drivable] = _hex_to_rgb(PALETTE['grass'])
     overlay[drivable_mask] = _hex_to_rgb(PALETTE['road'])  # dark grey road
-    overlay[bev_occ] = _hex_to_rgb(PALETTE['obstacle'])  # orange occluders
+    overlay[bev_occ_solid] = _hex_to_rgb(PALETTE['obstacle'])  # orange occluders
     # Black OSZ shadow — smooth tiny holes for clean rendering
     overlay[_smooth_osz_mask(osz_pa)] = _hex_to_rgb(PALETTE['osz'])
     ax.imshow(overlay, origin='lower', extent=extent)
@@ -663,7 +687,7 @@ def _draw_frame_own_ego(ax, nusc, sample_token, instance_token,
     # handles LOOKBACK frames (verdict in {True, False, None}); frame t
     # ('emerged') is drawn by _draw_frame_own_ego_emerged, which uses the
     # event's stored emerge_bev_xy verbatim instead of re-deriving it —
-    # keeping these two paths separate guarantees the green star matches
+    # keeping these two paths separate guarantees the red star matches
     # the miner's recorded emergence point exactly.
     pos, status = _vehicle_pos_in_frame_ego(
         nusc, instance_token, sample_token, traj)
@@ -788,7 +812,7 @@ class EventBrowser:
 
             # Frame t ('emerged') goes through a dedicated drawer that uses
             # the event's stored emerge_bev_xy verbatim (already in frame-t's
-            # ego frame) — this guarantees the green star matches the miner's
+            # ego frame) — this guarantees the red star matches the miner's
             # recorded emergence point exactly, with no re-derivation drift.
             # Lookback frames go through _draw_frame_own_ego, which derives
             # the vehicle position per-frame (direct annotation → trajectory
@@ -1032,7 +1056,7 @@ def _draw_frame_own_ego_emerged(ax, nusc, sample_token,
     Frame-t drawer: identical to _draw_frame_own_ego but the vehicle
     position comes from the event's stored emerge_bev_xy (already in
     frame-t's ego frame) rather than a re-derivation through the
-    annotation table. Guarantees the green star matches the miner's
+    annotation table. Guarantees the red star matches the miner's
     recorded emergence point to the last decimal.
     """
     ax.clear()
@@ -1056,10 +1080,11 @@ def _draw_frame_own_ego_emerged(ax, nusc, sample_token,
     overlay = np.zeros((*bev_occ.shape, 3), dtype=np.float32)
     overlay[:] = _hex_to_rgb(PALETTE['panel_bg'])
     # Non-drivable ground (sidewalk / grass)
-    non_drivable = ~(drivable_mask | bev_occ)
+    bev_occ_solid = _solidify_obstacles(bev_occ)
+    non_drivable = ~(drivable_mask | bev_occ_solid)
     overlay[non_drivable] = _hex_to_rgb(PALETTE['grass'])
     overlay[drivable_mask] = _hex_to_rgb(PALETTE['road'])
-    overlay[bev_occ] = _hex_to_rgb(PALETTE['obstacle'])
+    overlay[bev_occ_solid] = _hex_to_rgb(PALETTE['obstacle'])
     # Black OSZ shadow — smooth tiny holes for clean rendering
     overlay[_smooth_osz_mask(osz_pa)] = _hex_to_rgb(PALETTE['osz'])
     ax.imshow(overlay, origin='lower', extent=extent)
@@ -1084,7 +1109,7 @@ def _draw_frame_own_ego_emerged(ax, nusc, sample_token,
 
     x_ego, y_ego = emerge_xy
     if osz_source.in_bev_range(x_ego, y_ego):
-        ax.plot(y_ego, x_ego, '*', color=PALETTE['tracked_arrow'], markersize=15,
+        ax.plot(y_ego, x_ego, '*', color=VERDICT_STYLE['emerged'][0], markersize=15,
                 path_effects=[pe.withStroke(linewidth=1.5, foreground='white')])
         ax.text(y_ego + 0.8, x_ego + 0.8, frame_label,
                 color=PALETTE['text_dark'], fontsize=6,
@@ -1160,7 +1185,7 @@ def _draw_info_panel(ax, nusc, event, idx, total, label_filter,
         f'(unknown={n_unk})', PALETTE['text_dark'])
     add('─' * 40, PALETTE['info_separator'])
     add('legend:', PALETTE['text_dark'], 'bold')
-    add('  ■ black   = PA-relevant OSZ (shadow)', '#1a1a1a')
+    add('  ■ black   = PA-relevant OSZ (shadow)', PALETTE['osz'])
     add('  ■ orange  = occluders (walls, parked vehicles)', PALETTE['obstacle'])
     add('  ■ d.grey  = drivable area (road)', PALETTE['road'])
     add('  ■ green   = non-drivable ground (grass / sidewalk)', PALETTE['grass'])
@@ -1510,7 +1535,7 @@ if __name__ == '__main__':
                         label_filter=0, out_path=args.out_neg)
 
         print("\nDone. Open the PNGs and verify:")
-        print("  POSITIVE: green star should appear at OSZ boundary,")
+        print("  POSITIVE: red star should appear at OSZ boundary,")
         print("            red dots should be inside the red OSZ region.")
         print("  NEGATIVE: all dots should be blue (confirmed visible),")
         print("            none should sit inside the red OSZ region.")

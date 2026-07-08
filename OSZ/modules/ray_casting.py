@@ -37,11 +37,8 @@ Coordinate convention (matches PA_gen_v2/osz_source.py):
   silent (results mirror along the diagonal instead of erroring).
 
 No torch dependency:
-  This file used to import torch unconditionally at the top, but
-  contains zero torch code (pure numpy geometry). That import broke
-  any pure-CPU caller (e.g. PA_gen_v2 in environments without torch).
-  The CNN/CRF refinement path uses torch and lives in
-  OSZ/modules/crf_refine.py with its own import guard.
+  This file is pure numpy geometry. No CNN/CRF refinement is used in the
+  OSZ pipeline — the geometric ray-casting boundary is already exact.
 """
 
 import numpy as np

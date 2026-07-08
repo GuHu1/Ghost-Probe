@@ -273,8 +273,7 @@ PA_gen_v2/osz_source.py  ← 唯一的桥接层（含 OSZ 磁盘缓存）
 无条件 `import torch`，但这个文件里完全没用到 torch（是纯 numpy 几何代码）。这会
 导致任何没装 torch 的纯 CPU 环境（比如 `PA_gen_v2/` 这种只需要 numpy 几何计算的场景）
 在 `from OSZ.modules.ray_casting import ...` 这一步就直接失败。已去掉这个多余的
-import；需要 torch 的 CNN 精修部分完全在 `OSZ/modules/crf_refine.py` 里，那边本来
-就有独立的 import 保护。
+import；ray_casting.py 现在是纯 numpy，无任何 torch 依赖。
 
 `OSZ/modules/ray_casting.py` 的 `cast_osz_2d` 2D 阴影射线投射还做了**向量化优化**：
 原实现用纯 Python 双 for 循环（n_angles=12566 × max_steps=2000 = 2500 万次迭代，

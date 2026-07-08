@@ -42,14 +42,6 @@ except ImportError:
     MAP_AVAILABLE = False
     _DRIVABLE_FILTER_AVAILABLE = False
 
-# crf_refine.py depends on torch; don't make the whole pipeline fail on CPU-only
-# environments just because someone wants to run geometric OSZ without CNN.
-try:
-    from modules.crf_refine import CRFBoundaryRefiner, HierarchicalOSZLoss, OSZRefineCNN
-    _CRF_AVAILABLE = True
-except ImportError:
-    CRFBoundaryRefiner = HierarchicalOSZLoss = OSZRefineCNN = None
-    _CRF_AVAILABLE = False
 from utils.nuscenes_loader   import NuScenesOSZLoader
 from visualize.bev_viz       import (plot_bev_osz, plot_refinement_comparison,
                                      plot_camera_osz_comparison, plot_pa_osz,
@@ -61,7 +53,7 @@ from common.bev_config import (
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# BEV depth aggregation helper (for CRF pairwise term)
+# BEV depth aggregation helper
 # ═══════════════════════════════════════════════════════════════════════════
 
 def aggregate_depth_bev(
@@ -119,67 +111,6 @@ def aggregate_depth_bev(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Self-supervised CNN training (one epoch demo)
-# ═══════════════════════════════════════════════════════════════════════════
-
-def train_cnn_one_epoch(model, optimizer, loss_fn, dataset_frames, caster, device):
-    """
-    Self-supervised single epoch:
-      - GT = geometric OSZ (pseudo-label from LiDAR voxel-cast)
-      - Input = [geometric_mask, depth_bev] (2 channels)
-    Demonstrates the training loop structure; not a full training run.
-    """
-    import torch
-
-    model.train()
-    epoch_loss = {}
-
-    for frame_idx, frame in enumerate(dataset_frames):
-        cameras = frame['cameras']
-        if not cameras:
-            continue
-
-        # Forward pass through geometric pipeline to get pseudo-GT
-        per_cam_masks = {}
-        for cam_name, cam_data in cameras.items():
-            V = caster.cast(cam_data['depth_map'], cam_data['K'], cam_data['T_cam2ego'])
-            per_cam_masks[cam_name] = voxel_to_bev_maxpool(V)
-
-        osz_raw = np.ones((caster.nx, caster.ny), dtype=bool)
-        for m in per_cam_masks.values():
-            osz_raw &= m
-
-        depth_bev = aggregate_depth_bev(cameras, caster)
-        # GT for the CNN is the geometric OSZ itself (no CRF pre-processing)
-        osz_as_float = osz_raw.astype(np.float32)
-
-        # Build tensors  (B=1)
-        inp = np.stack([osz_as_float, depth_bev / 70.0], axis=0)
-        inp_t  = torch.tensor(inp[None], dtype=torch.float32, device=device)
-        gt_t   = torch.tensor(osz_as_float[None, None], dtype=torch.float32, device=device)
-        d_t    = torch.tensor(depth_bev[None, None], dtype=torch.float32, device=device)
-
-        pred_logit = model(inp_t)
-        losses = loss_fn(pred_logit, gt_t, depth_bev=d_t)
-
-        optimizer.zero_grad()
-        losses['total'].backward()
-        optimizer.step()
-
-        for k, v in losses.items():
-            epoch_loss[k] = epoch_loss.get(k, 0.0) + v.item()
-
-        print(f"  [frame {frame_idx+1}] "
-              f"total={losses['total'].item():.4f}  "
-              f"focal={losses['focal'].item():.4f}  "
-              f"lap={losses['laplacian'].item():.4f}  "
-              f"depth={losses['depth_constraint'].item():.4f}")
-
-    n = max(frame_idx + 1, 1)
-    return {k: v / n for k, v in epoch_loss.items()}
-
-
-# ═══════════════════════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -200,8 +131,6 @@ def main():
     parser.add_argument('--z_min',     type=float, default=0.3)
     parser.add_argument('--z_max',     type=float, default=2.2)
     parser.add_argument('--z_res',     type=float, default=0.3)
-    parser.add_argument('--train_cnn', action='store_true',
-                        help='Run one self-supervised CNN training epoch')
     parser.add_argument('--outdir',    type=str, default='./osz_output')
     args = parser.parse_args()
 
@@ -225,16 +154,6 @@ def main():
     print(f"  Voxel grid : {caster.nx} × {caster.ny} × {caster.nz}  "
           f"({caster.nx * caster.ny * caster.nz:,} voxels)")
 
-    # CRFBoundaryRefiner removed: the geometric OSZ boundary is already
-    # physically correct (determined by exact ray-casting geometry), and
-    # applying a Gaussian-blur CRF over it would BLUR the sharp occluder
-    # edge into a soft uncertain region — the wrong thing to do here.
-    # The CRF in BEVNeXt operates in IMAGE SPACE on DEPTH ESTIMATION
-    # (color-similarity -> depth consistency); that is a fundamentally
-    # different task from OSZ boundary post-processing.
-    # If soft boundary refinement is later needed, use the learned
-    # OSZRefineCNN + HierarchicalOSZLoss in crf_refine.py (optional Stage 5).
-
     loader = NuScenesOSZLoader(
         dataroot    = args.dataroot,
         version     = args.version,
@@ -243,25 +162,8 @@ def main():
     if args.mock:
         loader._use_mock = True
 
-    # Optional CNN
-    device = 'cpu'
-    cnn_model, optimizer, loss_fn = None, None, None
-    if args.train_cnn:
-        if not _CRF_AVAILABLE:
-            print("  [WARN] crf_refine module not importable (torch/scipy missing?); "
-                  "skipping CNN training.")
-        else:
-            try:
-                import torch
-                cnn_model = OSZRefineCNN(in_channels=2).to(device)
-                optimizer = torch.optim.Adam(cnn_model.parameters(), lr=1e-3)
-                loss_fn   = HierarchicalOSZLoss().to(device)
-                print(f"\n  CNN params: {sum(p.numel() for p in cnn_model.parameters()):,}")
-            except ImportError:
-                print("  [WARN] torch not available; skipping CNN training.")
-
     # ── Per-frame processing ──────────────────────────────────────────────
-    all_frames = list(loader)   # collect for optional CNN training
+    all_frames = list(loader)
 
     for frame_idx, frame in enumerate(all_frames):
         token   = frame['sample_token']
@@ -407,22 +309,6 @@ def main():
         np.save(outdir / f"frame_{frame_idx:04d}_osz_pa.npy",      osz_pa)
         if drivable_mask is not None:
             np.save(outdir / f"frame_{frame_idx:04d}_drivable.npy", drivable_mask)
-
-    # ── Optional CNN training epoch ───────────────────────────────────────
-    if args.train_cnn and cnn_model is not None:
-        print("\n" + "=" * 60)
-        print("  Running self-supervised CNN training epoch...")
-        avg_losses = train_cnn_one_epoch(
-            cnn_model, optimizer, loss_fn,
-            all_frames, caster, device
-        )
-        print("\n  Epoch avg losses: "
-              + "  ".join(f"{k}={v:.4f}" for k, v in avg_losses.items()))
-
-        # Save model weights
-        import torch
-        torch.save(cnn_model.state_dict(), outdir / 'osz_refine_cnn.pth')
-        print(f"  Model saved → {outdir / 'osz_refine_cnn.pth'}")
 
     print(f"\n✓ Done. Outputs in: {outdir}/")
     return outdir
