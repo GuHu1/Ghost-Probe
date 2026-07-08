@@ -100,11 +100,55 @@ from trajectory import build_instance_trajectories, locate_at_time, NO_EVIDENCE
 #   'emerged' = frame t (the emergence frame)
 # ─────────────────────────────────────────────────────────────────────
 VERDICT_STYLE = {
-    True:      ('red',         'o'),   # confirmed in OSZ
-    False:     ('deepskyblue', 'o'),   # confirmed visible
-    None:      ('#888888',     'x'),   # no evidence
-    'emerged': ('lime',        '*'),   # emerged at frame t
+    True:      ('#dc2626', 'o'),   # confirmed in OSZ  (red)
+    False:     ('#2563eb', 'o'),   # confirmed visible (blue)
+    None:      ('#6b7280', 'x'),   # no evidence (gray)
+    'emerged': ('#16a34a', '*'),   # emerged at frame t (green)
 }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Unified light-theme colour palette (academic-style BEV figure)
+# ─────────────────────────────────────────────────────────────────────
+# White background, light-grey road, black occlusion shadow, orange/blue
+# vehicles — matches the reference style the user provided.
+PALETTE = {
+    # BEV base layers
+    'bg':              '#f8f8f7',   # figure background (off-white)
+    'panel_bg':        '#ffffff',   # BEV panel background
+    'offroad':         '#f0f0ea',   # non-drivable ground (very light beige)
+    'road':            '#e6e6e6',   # drivable area / road surface
+    'obstacle':        '#7f7f7f',   # voxel-cast obstacles (walls, vehicles)
+    'osz':             '#1a1a1a',   # PA-relevant OSZ (black shadow)
+    'lane':            '#5a5a5a',   # HD-map lane lines
+
+    # Vehicles / agents
+    'ego':             '#2563eb',   # blue ego marker
+    'other_vehicle':   '#f97316',   # orange other vehicles
+    'other_vehicle_edge': '#b45309',
+    'pedestrian':      '#333333',   # dark grey pedestrian dot
+    'tracked_arrow':   '#111111',   # heading arrow for tracked vehicle
+
+    # Text / UI
+    'text_dark':       '#222222',
+    'text_mid':        '#555555',
+    'text_light':      '#888888',
+    'spine':           '#cccccc',
+    'error':           '#dc2626',
+
+    # Info panel (light theme)
+    'info_bg':         '#f8f9fa',
+    'info_separator':  '#dddddd',
+    'info_title':      '#111111',
+    'info_key':        '#2563eb',   # keyboard hint blue
+}
+
+
+def _hex_to_rgb(h: str):
+    """Convert '#rrggbb' to (r,g,b) in [0,1]."""
+    h = h.lstrip('#')
+    return tuple(int(h[i:i+2], 16) / 255.0 for i in (0, 2, 4))
+
 
 
 def _bev_extent(caster):
@@ -151,20 +195,27 @@ def visualize_event(nusc: NuScenes, event: Dict, ax: plt.Axes,
     # make correct mining decisions look wrong (raw OSZ is usually much
     # larger, including building shadows the miner never counted).
     overlay = np.zeros((*bev_occ.shape, 3), dtype=np.float32)
-    overlay[bev_occ]  = [0.55, 0.55, 0.55]
-    overlay[osz_pa]   = [0.80, 0.15, 0.15]
+    # Light base: white background
+    overlay[:] = _hex_to_rgb(PALETTE['panel_bg'])
+    # Road surface (drivable area)
+    overlay[drivable_mask] = _hex_to_rgb(PALETTE['road'])
+    # Solid obstacles / voxel-cast surfaces
+    overlay[bev_occ] = _hex_to_rgb(PALETTE['obstacle'])
+    # PA-relevant OSZ (black shadow on drivable area)
+    overlay[osz_pa] = _hex_to_rgb(PALETTE['osz'])
     ax.imshow(overlay, origin='lower', extent=extent)
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
+    ax.set_facecolor(PALETTE['panel_bg'])
 
-    # Ego marker at (0,0) in metric coords — no pixel math needed.
-    ax.plot(0, 0, 'w^', markersize=8,
+    # Ego marker at (0,0) in metric coords — blue triangle.
+    ax.plot(0, 0, '^', color=PALETTE['ego'], markersize=8,
             path_effects=[pe.withStroke(linewidth=2, foreground='black')])
 
     # Emerged vehicle position (frame t), already stored in metric ego xy
     ex, ey = event['emerge_bev_xy']
-    ax.plot(ey, ex, 'g*', markersize=14,
-            path_effects=[pe.withStroke(linewidth=2, foreground='black')],
+    ax.plot(ey, ex, '*', color=PALETTE['tracked_arrow'], markersize=14,
+            path_effects=[pe.withStroke(linewidth=2, foreground='white')],
             label='Emerged (t)')
     # NOTE: plotted as (ey, ex) not (ex, ey) — matplotlib's x-axis here is
     # ego-y (horizontal) and y-axis is ego-x (forward), matching the
@@ -197,37 +248,39 @@ def visualize_event(nusc: NuScenes, event: Dict, ax: plt.Axes,
         ax.plot(px, py, marker, color=color, markersize=6,
                 path_effects=[pe.withStroke(linewidth=1.5, foreground='black')])
         ax.text(px + 0.8, py + 0.8, f't-{len(lb_tokens)-i}',
-                color='white', fontsize=5,
-                path_effects=[pe.withStroke(linewidth=1, foreground='black')])
+                color=PALETTE['text_dark'], fontsize=5,
+                path_effects=[pe.withStroke(linewidth=1, foreground='white')])
 
     if len(traj_x) >= 2:
         traj_x.append(ey)
         traj_y.append(ex)
-        ax.plot(traj_x, traj_y, '-', color='yellow', linewidth=1.2, alpha=0.7)
+        ax.plot(traj_x, traj_y, '-', color=PALETTE['text_mid'], linewidth=1.2, alpha=0.7)
 
     n_osz  = sum(1 for v in was_in_osz if v is True)
     n_unk  = sum(1 for v in was_in_osz if v is None)
     if not title:
         title = (f"Ghost event | {n_osz}/{len(lb_tokens)} lb frames in OSZ"
                  + (f" ({n_unk} unknown)" if n_unk else ""))
-    ax.set_title(title, fontsize=7)
-    ax.set_xlabel('y (m) ← ego-left | ego-right →', fontsize=6)
-    ax.set_ylabel('x (m) ↑ forward', fontsize=6)
-    ax.tick_params(labelsize=5)
+    ax.set_title(title, fontsize=7, color=PALETTE['text_dark'])
+    ax.set_xlabel('y (m) ← ego-left | ego-right →', fontsize=6, color=PALETTE['text_mid'])
+    ax.set_ylabel('x (m) ↑ forward', fontsize=6, color=PALETTE['text_mid'])
+    ax.tick_params(labelsize=5, colors=PALETTE['text_dark'])
+    for s in ax.spines.values():
+        s.set_color(PALETTE['spine'])
 
     legend_patches = [
-        mpatches.Patch(color=[0.55]*3, label='Occupied'),
-        mpatches.Patch(color=[0.8, 0.15, 0.15], label='PA-relevant OSZ'),
-        plt.Line2D([0],[0], marker='*', color='g', markersize=8,
+        mpatches.Patch(color=_hex_to_rgb(PALETTE['obstacle']), label='Occupied'),
+        mpatches.Patch(color=_hex_to_rgb(PALETTE['osz']), label='PA-relevant OSZ'),
+        plt.Line2D([0],[0], marker='*', color=PALETTE['tracked_arrow'], markersize=8,
                    linestyle='none', label='Emerged (t)'),
-        plt.Line2D([0],[0], marker='o', color='red', markersize=5,
+        plt.Line2D([0],[0], marker='o', color=VERDICT_STYLE[True][0], markersize=5,
                    linestyle='none', label='Lookback (confirmed in OSZ)'),
-        plt.Line2D([0],[0], marker='o', color='deepskyblue', markersize=5,
+        plt.Line2D([0],[0], marker='o', color=VERDICT_STYLE[False][0], markersize=5,
                    linestyle='none', label='Lookback (confirmed visible)'),
-        plt.Line2D([0],[0], marker='x', color='#888888', markersize=5,
+        plt.Line2D([0],[0], marker='x', color=VERDICT_STYLE[None][0], markersize=5,
                    linestyle='none', label='Lookback (no evidence)'),
     ]
-    ax.legend(handles=legend_patches, fontsize=5, loc='upper right')
+    ax.legend(handles=legend_patches, fontsize=5, loc='upper right', framealpha=0.9)
 
 
 def _get_vehicle_global_pos(nusc: NuScenes, instance_token: str,
@@ -412,8 +465,8 @@ def _draw_annotation_boxes(ax, anns: List[Dict],
         cat = a['category']
 
         if cat.startswith('human'):
-            # Pedestrians: small dots, no box (too small to matter at BEV scale)
-            ax.plot(a['y'], a['x'], 'o', color='#ffeb3b',
+            # Pedestrians: small dark dots, no box (too small to matter at BEV scale)
+            ax.plot(a['y'], a['x'], 'o', color=PALETTE['pedestrian'],
                     markersize=2.5, alpha=0.8)
             continue
 
@@ -425,7 +478,7 @@ def _draw_annotation_boxes(ax, anns: List[Dict],
         if is_tracked:
             vcolor, _ = VERDICT_STYLE.get(tracked_verdict, VERDICT_STYLE[None])
             poly = mpatches.Polygon(plot_pts, closed=True,
-                                    facecolor=vcolor, edgecolor='white',
+                                    facecolor=vcolor, edgecolor='black',
                                     alpha=0.35, linewidth=1.5, zorder=5)
             ax.add_patch(poly)
             # Heading arrow for the tracked vehicle
@@ -433,18 +486,18 @@ def _draw_annotation_boxes(ax, anns: List[Dict],
             dy = np.sin(a['heading']) * 2.5
             ax.annotate('', xy=(a['y'] + dy, a['x'] + dx),
                         xytext=(a['y'], a['x']),
-                        arrowprops=dict(arrowstyle='->', color='white',
+                        arrowprops=dict(arrowstyle='->', color=PALETTE['tracked_arrow'],
                                         lw=1.5), zorder=6)
         elif cat.startswith('vehicle'):
             poly = mpatches.Polygon(plot_pts, closed=True,
-                                    facecolor='#00e5ff', edgecolor='#0099bb',
-                                    alpha=0.15, linewidth=0.4, zorder=3)
+                                    facecolor=PALETTE['other_vehicle'], edgecolor=PALETTE['other_vehicle_edge'],
+                                    alpha=0.25, linewidth=0.6, zorder=3)
             ax.add_patch(poly)
         else:
             # Barriers, cones, construction objects, etc.
             poly = mpatches.Polygon(plot_pts, closed=True,
-                                    facecolor='#ff9800', edgecolor='#cc6600',
-                                    alpha=0.12, linewidth=0.3, zorder=3)
+                                    facecolor='#9ca3af', edgecolor='#4b5563',
+                                    alpha=0.18, linewidth=0.4, zorder=3)
             ax.add_patch(poly)
 
 
@@ -493,7 +546,7 @@ def _draw_map_overlay(ax, nusc: NuScenes, sample_token: str) -> None:
                     pts.append((epos[1], epos[0]))   # (ego-y, ego-x)
                 if len(pts) >= 2:
                     xs, ys = zip(*pts)
-                    ax.plot(xs, ys, '-', color='#3a5a7a',
+                    ax.plot(xs, ys, '-', color=PALETTE['lane'],
                             linewidth=0.4, alpha=0.5, zorder=1)
     except Exception:
         pass    # map not available / wrong location / etc — skip silently
@@ -520,44 +573,46 @@ def _draw_frame_own_ego(ax, nusc, sample_token, instance_token,
     OSZ and hide exactly the motion this browser exists to reveal.
     """
     ax.clear()
-    ax.set_facecolor('#101418')
+    ax.set_facecolor(PALETTE['panel_bg'])
 
     try:
         bev_occ, osz_raw, osz_pa, drivable_mask = \
             osz_source.get_pa_relevant_osz_for_sample(nusc, sample_token)
     except Exception as ex:
         ax.axis('off')
+        ax.set_facecolor(PALETTE['panel_bg'])
         ax.text(0.5, 0.5, f"OSZ failed\n{ex}",
                 transform=ax.transAxes, ha='center', va='center',
-                color='#ff8080', fontsize=8)
-        ax.set_title(f'{frame_label}  (OSZ ERROR)', fontsize=8, color='#ff8080')
+                color=PALETTE['error'], fontsize=8)
+        ax.set_title(f'{frame_label}  (OSZ ERROR)', fontsize=8, color=PALETTE['error'])
         return None
 
     caster = osz_source.get_caster()
     extent, xlim, ylim = _bev_extent(caster)
 
     overlay = np.zeros((*bev_occ.shape, 3), dtype=np.float32)
-    overlay[drivable_mask] = [0.10, 0.16, 0.10]   # road surface: subtle green
-    overlay[bev_occ] = [0.30, 0.30, 0.32]          # obstacles: gray
-    overlay[osz_pa]  = [0.80, 0.18, 0.18]          # PA-relevant OSZ: red
+    overlay[:] = _hex_to_rgb(PALETTE['panel_bg'])  # white base
+    overlay[drivable_mask] = _hex_to_rgb(PALETTE['road'])  # light grey road
+    overlay[bev_occ] = _hex_to_rgb(PALETTE['obstacle'])  # grey obstacles
+    overlay[osz_pa] = _hex_to_rgb(PALETTE['osz'])  # black OSZ shadow
     ax.imshow(overlay, origin='lower', extent=extent)
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
-    ax.tick_params(labelsize=5, colors='#cccccc')
+    ax.tick_params(labelsize=5, colors=PALETTE['text_dark'])
     for s in ax.spines.values():
-        s.set_color('#444')
+        s.set_color(PALETTE['spine'])
 
-    # HD-map lane boundaries (thin blue lines) — adds road context.
+    # HD-map lane boundaries (thin grey lines) — adds road context.
     _draw_map_overlay(ax, nusc, sample_token)
 
-    # Ego at origin of THIS frame's ego frame.
-    ax.plot(0, 0, 'w^', markersize=7,
+    # Ego at origin of THIS frame's ego frame — blue triangle.
+    ax.plot(0, 0, '^', color=PALETTE['ego'], markersize=7,
             path_effects=[pe.withStroke(linewidth=1.5, foreground='black')])
     # Heading tick: ego always faces +x (forward=up) in its own frame.
     ax.annotate('', xy=(0, 3.0), xytext=(0, 0),
-                arrowprops=dict(arrowstyle='->', color='white', lw=1.0))
+                arrowprops=dict(arrowstyle='->', color=PALETTE['text_dark'], lw=1.0))
 
-    # All scene annotations (vehicles=cyan boxes, peds=yellow dots,
+    # All scene annotations (vehicles=orange boxes, peds=dark dots,
     # tracked vehicle=verdict-coloured box + heading arrow).
     _anns = _get_scene_annotations_ego(nusc, sample_token)
     _draw_annotation_boxes(ax, _anns, tracked_instance=instance_token,
@@ -582,10 +637,10 @@ def _draw_frame_own_ego(ax, nusc, sample_token, instance_token,
             color, marker = VERDICT_STYLE.get(verdict, VERDICT_STYLE[None])
             ms = 14 if verdict == 'emerged' else 7
             ax.plot(y_ego, x_ego, marker, color=color, markersize=ms,
-                    path_effects=[pe.withStroke(linewidth=1.5, foreground='black')])
+                    path_effects=[pe.withStroke(linewidth=1.5, foreground='white')])
             ax.text(y_ego + 0.8, x_ego + 0.8, frame_label,
-                    color='white', fontsize=6,
-                    path_effects=[pe.withStroke(linewidth=1, foreground='black')])
+                    color=PALETTE['text_dark'], fontsize=6,
+                    path_effects=[pe.withStroke(linewidth=1, foreground='white')])
             if verdict is True:
                 title_bits.append('IN OSZ')
             elif verdict is False:
@@ -596,9 +651,9 @@ def _draw_frame_own_ego(ax, nusc, sample_token, instance_token,
         title_bits.append('no evidence' if status == 'no_evidence' else 'no pos')
 
     title_bits.append(f'OSZ {coverage_pct:.1f}%')
-    ax.set_title('  |  '.join(title_bits), fontsize=7, color='#e8e8e8')
-    ax.set_xlabel('y (m) ←left | right→', fontsize=6, color='#aaaaaa')
-    ax.set_ylabel('x (m) ↑ forward', fontsize=6, color='#aaaaaa')
+    ax.set_title('  |  '.join(title_bits), fontsize=7, color=PALETTE['text_dark'])
+    ax.set_xlabel('y (m) ←left | right→', fontsize=6, color=PALETTE['text_mid'])
+    ax.set_ylabel('x (m) ↑ forward', fontsize=6, color=PALETTE['text_mid'])
 
     return coverage_pct
 
@@ -688,7 +743,7 @@ class EventBrowser:
                 ax.axis('off')
                 ax.text(0.5, 0.5, f'{label}\n(no data)',
                         transform=ax.transAxes, ha='center', va='center',
-                        color='#888', fontsize=9)
+                        color=PALETTE['text_light'], fontsize=9)
                 coverages.append(None)
                 continue
 
@@ -756,7 +811,7 @@ class EventBrowser:
 
         self.fig, self.axes = plt.subplots(2, 3, figsize=(18, 11))
         self.fig.canvas.manager.set_window_title('Ghost-Probe Event Browser')
-        self.fig.patch.set_facecolor('#1a1d22')
+        self.fig.patch.set_facecolor(PALETTE['bg'])
         # Tighter spacing; the info panel needs room for text.
         self.fig.subplots_adjust(left=0.04, right=0.98, top=0.93, bottom=0.04,
                                  wspace=0.18, hspace=0.22)
@@ -819,7 +874,7 @@ class HeadlessEventBrowser:
         frames.append((event['emerge_sample'], 'emerged', 't'))
 
         fig, axes = _hp.subplots(2, 3, figsize=(18, 11))
-        fig.patch.set_facecolor('#1a1d22')
+        fig.patch.set_facecolor(PALETTE['bg'])
         fig.subplots_adjust(left=0.04, right=0.98, top=0.93, bottom=0.04,
                             wspace=0.18, hspace=0.22)
 
@@ -834,8 +889,8 @@ class HeadlessEventBrowser:
                 cov = _draw_frame_own_ego(
                     ax, self.nusc, tok, instance_tok, verdict, label, traj)
             else:
-                ax.clear(); ax.set_facecolor('#101418'); ax.axis('off')
-                ax.set_title(f'{label}  (no data)', fontsize=8, color='#888')
+                ax.clear(); ax.set_facecolor(PALETTE['panel_bg']); ax.axis('off')
+                ax.set_title(f'{label}  (no data)', fontsize=8, color=PALETTE['text_light'])
                 cov = None
             coverages.append(cov)
 
@@ -845,7 +900,7 @@ class HeadlessEventBrowser:
 
         fig.suptitle(f'Ghost-Probe Event Browser  [{self.idx+1} / '
                      f'{len(self.events)}]   (headless mode)',
-                     fontsize=11, color='#e8e8e8', fontweight='bold')
+                     fontsize=11, color=PALETTE['text_dark'], fontweight='bold')
         Path(self.out_dir).mkdir(parents=True, exist_ok=True)
         self.out_path = str(Path(self.out_dir) /
                             f'event_{self.idx:04d}.png')
@@ -942,39 +997,41 @@ def _draw_frame_own_ego_emerged(ax, nusc, sample_token,
     recorded emergence point to the last decimal.
     """
     ax.clear()
-    ax.set_facecolor('#101418')
+    ax.set_facecolor(PALETTE['panel_bg'])
 
     try:
         bev_occ, osz_raw, osz_pa, drivable_mask = \
             osz_source.get_pa_relevant_osz_for_sample(nusc, sample_token)
     except Exception as ex:
         ax.axis('off')
+        ax.set_facecolor(PALETTE['panel_bg'])
         ax.text(0.5, 0.5, f"OSZ failed\n{ex}",
                 transform=ax.transAxes, ha='center', va='center',
-                color='#ff8080', fontsize=8)
-        ax.set_title(f'{frame_label}  (OSZ ERROR)', fontsize=8, color='#ff8080')
+                color=PALETTE['error'], fontsize=8)
+        ax.set_title(f'{frame_label}  (OSZ ERROR)', fontsize=8, color=PALETTE['error'])
         return None
 
     caster = osz_source.get_caster()
     extent, xlim, ylim = _bev_extent(caster)
 
     overlay = np.zeros((*bev_occ.shape, 3), dtype=np.float32)
-    overlay[drivable_mask] = [0.10, 0.16, 0.10]   # road surface: subtle green
-    overlay[bev_occ] = [0.30, 0.30, 0.32]          # obstacles: gray
-    overlay[osz_pa]  = [0.80, 0.18, 0.18]          # PA-relevant OSZ: red
+    overlay[:] = _hex_to_rgb(PALETTE['panel_bg'])
+    overlay[drivable_mask] = _hex_to_rgb(PALETTE['road'])
+    overlay[bev_occ] = _hex_to_rgb(PALETTE['obstacle'])
+    overlay[osz_pa] = _hex_to_rgb(PALETTE['osz'])
     ax.imshow(overlay, origin='lower', extent=extent)
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
-    ax.tick_params(labelsize=5, colors='#cccccc')
+    ax.tick_params(labelsize=5, colors=PALETTE['text_dark'])
     for s in ax.spines.values():
-        s.set_color('#444')
+        s.set_color(PALETTE['spine'])
 
     _draw_map_overlay(ax, nusc, sample_token)
 
-    ax.plot(0, 0, 'w^', markersize=7,
+    ax.plot(0, 0, '^', color=PALETTE['ego'], markersize=7,
             path_effects=[pe.withStroke(linewidth=1.5, foreground='black')])
     ax.annotate('', xy=(0, 3.0), xytext=(0, 0),
-                arrowprops=dict(arrowstyle='->', color='white', lw=1.0))
+                arrowprops=dict(arrowstyle='->', color=PALETTE['text_dark'], lw=1.0))
 
     _anns = _get_scene_annotations_ego(nusc, sample_token)
     _draw_annotation_boxes(ax, _anns, tracked_instance=instance_token,
@@ -984,15 +1041,15 @@ def _draw_frame_own_ego_emerged(ax, nusc, sample_token,
 
     x_ego, y_ego = emerge_xy
     if osz_source.in_bev_range(x_ego, y_ego):
-        ax.plot(y_ego, x_ego, '*', color='lime', markersize=15,
-                path_effects=[pe.withStroke(linewidth=1.5, foreground='black')])
+        ax.plot(y_ego, x_ego, '*', color=PALETTE['tracked_arrow'], markersize=15,
+                path_effects=[pe.withStroke(linewidth=1.5, foreground='white')])
         ax.text(y_ego + 0.8, x_ego + 0.8, frame_label,
-                color='white', fontsize=6,
-                path_effects=[pe.withStroke(linewidth=1, foreground='black')])
+                color=PALETTE['text_dark'], fontsize=6,
+                path_effects=[pe.withStroke(linewidth=1, foreground='white')])
     ax.set_title(f'{frame_label}  |  EMERGED  |  OSZ {coverage_pct:.1f}%',
-                 fontsize=7, color='#e8e8e8')
-    ax.set_xlabel('y (m) ←left | right→', fontsize=6, color='#aaaaaa')
-    ax.set_ylabel('x (m) ↑ forward', fontsize=6, color='#aaaaaa')
+                 fontsize=7, color=PALETTE['text_dark'])
+    ax.set_xlabel('y (m) ←left | right→', fontsize=6, color=PALETTE['text_mid'])
+    ax.set_ylabel('x (m) ↑ forward', fontsize=6, color=PALETTE['text_mid'])
     return coverage_pct
 
 
@@ -1004,11 +1061,11 @@ def _draw_info_panel(ax, nusc, event, idx, total, label_filter,
     """
     ax.clear()
     ax.axis('off')
-    ax.set_facecolor('#1a1d22')
+    ax.set_facecolor(PALETTE['info_bg'])
 
     scene = nusc.get('scene', event['scene_token'])
     label_str = 'POSITIVE (ghost)' if event['label'] == 1 else 'NEGATIVE (visible)'
-    label_color = '#ff5d5d' if event['label'] == 1 else '#5db7ff'
+    label_color = '#dc2626' if event['label'] == 1 else '#2563eb'
 
     ex, ey = event['emerge_bev_xy']
     emerge_dist = float(np.sqrt(ex*ex + ey*ey))
@@ -1023,60 +1080,60 @@ def _draw_info_panel(ax, nusc, event, idx, total, label_filter,
     verdict_rows = []
     for (tok, verdict, label), cov in zip(frames, coverages):
         if tok is None:
-            verdict_rows.append((label, '—', '—', '#888'))
+            verdict_rows.append((label, '—', '—', PALETTE['text_light']))
             continue
         if verdict == 'emerged':
-            text, col = 'EMERGED', '#9be86b'
+            text, col = 'EMERGED', VERDICT_STYLE['emerged'][0]
         elif verdict is True:
-            text, col = 'IN OSZ', '#ff6b6b'
+            text, col = 'IN OSZ', VERDICT_STYLE[True][0]
         elif verdict is False:
-            text, col = 'visible', '#5db7ff'
+            text, col = 'visible', VERDICT_STYLE[False][0]
         else:
-            text, col = 'unknown', '#aaaaaa'
+            text, col = 'unknown', VERDICT_STYLE[None][0]
         cov_s = f'{cov:.1f}%' if cov is not None else '—'
         verdict_rows.append((label, text, cov_s, col))
 
     lines = []  # (text, color, weight)
-    def add(text, color='#e8e8e8', weight='normal'):
+    def add(text, color=PALETTE['text_dark'], weight='normal'):
         lines.append((text, color, weight))
 
-    add(f'EVENT  [{idx+1} / {total}]', '#ffffff', 'bold')
-    add(f'(showing label={label_filter} subset)', '#888')
-    add('─' * 40, '#444')
+    add(f'EVENT  [{idx+1} / {total}]', PALETTE['info_title'], 'bold')
+    add(f'(showing label={label_filter} subset)', PALETTE['text_light'])
+    add('─' * 40, PALETTE['info_separator'])
     add(f'Label         : {label_str}', label_color, 'bold')
-    add(f'Scene         : {scene["name"]}', '#e8e8e8')
-    add(f'Instance      : {event["instance_token"][:18]}...', '#bdbdbd')
-    add(f'Emerge sample : {event["emerge_sample"][:18]}...', '#bdbdbd')
-    add(f'Emerge dist   : {emerge_dist:.1f} m', '#e8e8e8')
-    add('─' * 40, '#444')
-    add('Lookback verdicts (oldest → newest):', '#cccccc', 'bold')
-    add(f'  {"frame":<6} {"verdict":<10} {"OSZ cov":<8}', '#888')
+    add(f'Scene         : {scene["name"]}', PALETTE['text_dark'])
+    add(f'Instance      : {event["instance_token"][:18]}...', PALETTE['text_mid'])
+    add(f'Emerge sample : {event["emerge_sample"][:18]}...', PALETTE['text_mid'])
+    add(f'Emerge dist   : {emerge_dist:.1f} m', PALETTE['text_dark'])
+    add('─' * 40, PALETTE['info_separator'])
+    add('Lookback verdicts (oldest → newest):', PALETTE['text_dark'], 'bold')
+    add(f'  {"frame":<6} {"verdict":<10} {"OSZ cov":<8}', PALETTE['text_light'])
     for label, text, cov_s, col in verdict_rows:
         add(f'  {label:<6} {text:<10} {cov_s:<8}', col)
-    add('─' * 40, '#444')
+    add('─' * 40, PALETTE['info_separator'])
     add(f'OSZ overlap     : {n_osz} / {len(event["was_in_osz"])} lookback frames',
-        '#ff6b6b' if n_osz else '#e8e8e8')
+        VERDICT_STYLE[True][0] if n_osz else PALETTE['text_dark'])
     add(f'Evidence frames : {n_ev} / {len(event["was_in_osz"])} '
-        f'(unknown={n_unk})', '#e8e8e8')
-    add('─' * 40, '#444')
-    add('legend:', '#cccccc', 'bold')
-    add('  ■ red     = PA-relevant OSZ (occlusion shadow)', '#ff6b6b')
-    add('  ■ gray    = solid obstacles (walls, vehicles)', '#888')
-    add('  ■ green   = drivable area (road surface)', '#5d9b5d')
-    add('  ■ cyan    = other vehicles (BEV boxes)', '#00e5ff')
-    add('  ■ yellow  = pedestrians', '#ffeb3b')
-    add('  ■ blue    = lane boundaries (HD map)', '#3a5a7a')
-    add('  ★ colored = tracked ghost vehicle + heading', '#9be86b')
-    add('─' * 40, '#444')
-    add('read the grid:', '#cccccc', 'bold')
-    add('  • car stayed in OSZ?  red dots across t-4..t-1', '#888')
-    add('  • when did it come out?  red→green transition', '#888')
-    add('  • OSZ moving?  compare red shape across frames', '#888')
-    add('  • ego turning?  OSZ shape rotates between frames', '#888')
-    add('  • other cars explain OSZ?  see cyan boxes', '#888')
-    add('  • road makes sense?  green + lane lines', '#888')
-    add('─' * 40, '#444')
-    add('keys:  n=next   p=prev   r=redraw   q=quit', '#5db7ff', 'bold')
+        f'(unknown={n_unk})', PALETTE['text_dark'])
+    add('─' * 40, PALETTE['info_separator'])
+    add('legend:', PALETTE['text_dark'], 'bold')
+    add('  ■ black   = PA-relevant OSZ (shadow)', '#1a1a1a')
+    add('  ■ gray    = obstacles (walls, vehicles)', PALETTE['obstacle'])
+    add('  ■ lgrey   = drivable area (road)', PALETTE['road'])
+    add('  ■ orange  = other vehicles', PALETTE['other_vehicle'])
+    add('  ■ dk dot  = pedestrians', PALETTE['pedestrian'])
+    add('  ■ grey ln = lane boundaries', PALETTE['lane'])
+    add('  ★ colored = tracked ghost vehicle + heading', VERDICT_STYLE['emerged'][0])
+    add('─' * 40, PALETTE['info_separator'])
+    add('read the grid:', PALETTE['text_dark'], 'bold')
+    add('  • car stayed in OSZ?  red dots across t-4..t-1', PALETTE['text_light'])
+    add('  • when did it come out?  red→green transition', PALETTE['text_light'])
+    add('  • OSZ moving?  compare red shape across frames', PALETTE['text_light'])
+    add('  • ego turning?  OSZ shape rotates between frames', PALETTE['text_light'])
+    add('  • other cars explain OSZ?  see orange boxes', PALETTE['text_light'])
+    add('  • road makes sense?  grey surface + lane lines', PALETTE['text_light'])
+    add('─' * 40, PALETTE['info_separator'])
+    add('keys:  n=next   p=prev   r=redraw   q=quit', PALETTE['info_key'], 'bold')
 
     # Render lines top-to-bottom.
     y0 = 0.97
