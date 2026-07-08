@@ -241,6 +241,12 @@ def _ensure_gui_backend() -> str:
         return matplotlib.get_backend()
 
     candidates = []
+    # ── WebAgg: serves interactive plots in browser (ideal for remote servers)
+    try:
+        import tornado  # noqa: F401  (webagg dependency)
+        candidates.append('WebAgg')
+    except Exception:
+        pass
     try:
         import tkinter  # noqa: F401  (probe only)
         candidates.append('TkAgg')
@@ -552,6 +558,163 @@ class EventBrowser:
         plt.show()
 
 
+# ════════════════════════════════════════════════════════════════════
+# HEADLESS: terminal-based browser (zero GUI dependencies)
+# ════════════════════════════════════════════════════════════════════
+
+class HeadlessEventBrowser:
+    """
+    Terminal-driven event browser that works on ANY server — no tkinter,
+    no Qt, no display required.  Uses Agg backend to render each event
+    to a temporary PNG, then reads navigation commands from stdin.
+
+    Usage is identical to EventBrowser (n/p/j/k/q/numbers), but output
+    goes to a file instead of a GUI window.
+    """
+
+    def __init__(self, nusc: NuScenes, events: List[Dict],
+                 start_idx: int = 0, label_filter: int = 1):
+        self.nusc = nusc
+        if label_filter >= 0:
+            self.events = [e for e in events if e['label'] == label_filter]
+        else:
+            self.events = list(events)
+        self.idx = max(0, min(start_idx, len(self.events) - 1))
+        self.label_filter = label_filter
+        # Output path for the current-frame PNG.
+        self.out_path = str(_REPO_ROOT / 'PA_gen_v2' / 'output' /
+                            '_browser_current.png')
+
+    # ── render (same logic as EventBrowser, but saves to file) ────────
+    def _render(self) -> None:
+        """Render current event to self.out_path (overwrites each time)."""
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as _hp  # headless pyplot
+
+        event = self.events[self.idx]
+        instance_tok = event['instance_token']
+        traj = trajectory.build_instance_trajectories(
+            self.nusc).get(instance_tok)
+
+        lookback = event.get('lookback_tokens', [])
+        was_in_osz = event.get('was_in_osz', [])
+        frames = []          # [(sample_token_or_None, verdict, label_str)]
+        for i in range(LOOKBACK_K):  # t-4 .. t-1
+            if i < len(lookback):
+                tok = lookback[i]
+                verdict = was_in_osz[i] if i < len(was_in_osz) else None
+                frames.append((tok, verdict, f't-{LOOKBACK_K - i - 1}'))
+            else:
+                frames.append((None, None, f't-{LOOKBACK_K - i - 1}'))
+        # Emergence frame t.
+        frames.append((event['emerge_sample'], 'emerged', 't'))
+
+        fig, axes = _hp.subplots(2, 3, figsize=(18, 11))
+        fig.patch.set_facecolor('#1a1d22')
+        fig.subplots_adjust(left=0.04, right=0.98, top=0.93, bottom=0.04,
+                            wspace=0.18, hspace=0.22)
+
+        coverages = []
+        for ax, (tok, verdict, label) in zip(axes.flat[:5], frames):
+            if verdict == 'emerged':
+                ex, ey = event['emerge_bev_xy']
+                cov = _draw_frame_own_ego_emerged(
+                    ax, self.nusc, tok, (float(ex), float(ey)), label)
+            elif tok is not None:
+                cov = _draw_frame_own_ego(
+                    ax, self.nusc, tok, instance_tok, verdict, label, traj)
+            else:
+                ax.clear(); ax.set_facecolor('#101418'); ax.axis('off')
+                ax.set_title(f'{label}  (no data)', fontsize=8, color='#888')
+                cov = None
+            coverages.append(cov)
+
+        _draw_info_panel(axes[2, 2], self.nusc, event, self.idx,
+                         len(self.events), frames, coverages,
+                         self.label_filter)
+
+        fig.suptitle(f'Ghost-Probe Event Browser  [{self.idx+1} / '
+                     f'{len(self.events)}]   (headless mode)',
+                     fontsize=11, color='#e8e8e8', fontweight='bold')
+        Path(self.out_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(self.out_path, dpi=130, bbox_inches='tight')
+        _hp.close(fig)
+
+    # ── terminal UI ───────────────────────────────────────────────────
+    def _print_status(self) -> None:
+        ev = self.events[self.idx]
+        scene = self.nusc.get('scene', ev['scene_token'])
+        lbl = 'GHOST' if ev['label'] == 1 else 'VISIBLE'
+        print(f'\n  ┌─ Event {self.idx+1}/{len(self.events)} ─'
+              f' {lbl} ─ {scene["name"]}')
+        print(f'  │ instance={ev["instance_token"][:16]}…')
+        ex, ey = ev['emerge_bev_xy']
+        d = (ex*ex + ey*ey) ** 0.5
+        print(f' │ emerge_dist={d:.1f}m  osz_frames={ev["n_osz_frames"]}')
+        print(f' │ saved → {self.out_path}')
+        print(f' └─')
+
+    # ── entry ─────────────────────────────────────────────────────────
+    def launch(self) -> None:
+        print('\n╔══════════════════════════════════════════════════╗')
+        print('║  Ghost-Probe Event Browser  (HEADLESS MODE)       ║')
+        print('║  No GUI backend found; using terminal + PNG.      ║')
+        print('╠══════════════════════════════════════════════════╣')
+        print('║  n / →     next event                            ║')
+        print('║  p / ←     previous event                        ║')
+        print('║  j / +10   jump forward 10                       ║')
+        print('║  k / -10   jump backward 10                      ║')
+        print('║  <number>  go to event index                      ║')
+        print('║  r         redraw current                         ║')
+        print('║  q         quit                                   ║')
+        print('╚══════════════════════════════════════════════════╝')
+        print('\n  (open the PNG in another terminal/image viewer)')
+        print("  Tip: use 'tail -f' on a log or a viewer that")
+        print("  auto-reloads to see updates without reopening.\n")
+
+        self._render()
+        self._print_status()
+
+        while True:
+            try:
+                cmd = input('  Command [n/p/r/q/<index>]> ').strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("\n  Bye.")
+                break
+
+            if cmd in ('q', 'quit'):
+                print("  Bye.")
+                break
+            elif cmd in ('n', '', '→', 'right'):
+                if self.idx < len(self.events) - 1:
+                    self.idx += 1; self._render(); self._print_status()
+                else:
+                    print('  Already at last event.')
+            elif cmd in ('p', '←', 'left'):
+                if self.idx > 0:
+                    self.idx -= 1; self._render(); self._print_status()
+                else:
+                    print('  Already at first event.')
+            elif cmd in ('j', '+'):
+                ni = min(self.idx + 10, len(self.events) - 1)
+                if ni != self.idx:
+                    self.idx = ni; self._render(); self._print_status()
+            elif cmd in ('k', '-'):
+                ni = max(self.idx - 10, 0)
+                if ni != self.idx:
+                    self.idx = ni; self._render(); self._print_status()
+            elif cmd.isdigit():
+                target = int(cmd)
+                if 0 <= target < len(self.events):
+                    self.idx = target; self._render(); self._print_status()
+                else:
+                    print(f'  Index out of range [0..{len(self.events)-1}]')
+            elif cmd == 'r':
+                self._render(); self._print_status()
+            else:
+                print('  Unknown command. n=next p=prev r=redraw q=quit')
+
+
 # ── frame-t drawer (uses the stored emerge position verbatim) ─────────
 def _draw_frame_own_ego_emerged(ax, nusc, sample_token,
                                 emerge_xy: Tuple[float, float],
@@ -695,10 +858,19 @@ def _draw_info_panel(ax, nusc, event, idx, total, label_filter,
 
 def launch_browser(nusc: NuScenes, events: List[Dict],
                    start_idx: int = 0, label_filter: int = 1) -> None:
-    """Convenience entry: build an EventBrowser and show it."""
-    browser = EventBrowser(nusc, events, start_idx=start_idx,
-                           label_filter=label_filter)
-    browser.launch()
+    """Launch interactive EventBrowser; falls back to headless if no GUI."""
+    try:
+        browser = EventBrowser(nusc, events, start_idx=start_idx,
+                               label_filter=label_filter)
+        browser.launch()
+    except RuntimeError as exc:
+        # No GUI backend available (headless server / missing tkinter/Qt).
+        # Automatically fall back to terminal-based headless mode.
+        print(f'\n  ⚠  {exc}')
+        print('  → Falling back to HEADLESS (terminal + PNG) mode.\n')
+        hb = HeadlessEventBrowser(nusc, events, start_idx=start_idx,
+                                  label_filter=label_filter)
+        hb.launch()
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -804,10 +976,11 @@ if __name__ == '__main__':
     print_event_stats(events)
 
     if args.browse:
-        print(f"\nLaunching interactive EventBrowser "
+        print(f"\nLaunching EventBrowser "
               f"(label_filter={args.label_filter}, "
               f"{len([e for e in events if args.label_filter < 0 or e['label'] == args.label_filter])} events)...")
-        print("Keys:  n=next  p=prev  r=redraw  q=quit   (click the figure first)")
+        print("GUI mode:   n=next  p=prev  r=redraw  q=quit   (click figure)")
+        print("Headless:   same keys + j/k/+/-/number    (terminal input)")
         launch_browser(nusc, events, start_idx=args.start_idx,
                        label_filter=args.label_filter)
     else:
