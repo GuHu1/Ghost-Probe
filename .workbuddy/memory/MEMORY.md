@@ -39,10 +39,13 @@
 - 2x3 布局 [t-4 t-3 t-2 / t-1 t info]，每帧用各自 ego 系显示自己的 OSZ。
 - 键盘 n/p/r/q。lookback 车辆位置用 trajectory 插值（与 miner 一致）。
 - **自动降级**：GUI 后端不可用时（远程服务器/无 tkinter/Qt），
-  自动进入 HeadlessEventBrowser（终端输入 + PNG 输出到 `output/_browser_current.png`）。
+  自动进入 HeadlessEventBrowser（终端输入 + PNG 输出到 `output/browser/event_XXXX.png`）。
   额外支持 j/k（±10跳转）和数字索引跳转。
   WebAgg 后端（需 tornado）也可用于浏览器内交互。
-- 离线导出走不加 `--browse`（默认）：make_event_grid → PNG。
+- **`--web` 浏览器图廊模式**（推荐，绕开 matplotlib 窗口卡顿）：
+  渲染每个事件为 `output/web/event_XXXX.png` + 生成 `index.html`，
+  浏览器里 ←/→/j/k 翻页。`--web_max N` 限制数量（0=全部）。
+- 离线导出走不加 `--browse`/`--web`（默认）：make_event_grid → PNG。
 
 ## 环境
 - managed python 3.13.12；无项目 venv（依赖 nuscenes-devkit/shapely 等未装）。

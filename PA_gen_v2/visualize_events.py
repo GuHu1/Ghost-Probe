@@ -42,6 +42,8 @@ model training without this visual check.
 
 import sys
 import argparse
+import json
+import webbrowser
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 
@@ -974,6 +976,146 @@ def print_event_stats(events: List[Dict]) -> None:
     print(f"{'─'*50}\n")
 
 
+# ════════════════════════════════════════════════════════════════════
+# WEB GALLERY: pre-render every event to PNG + an index.html you open
+# in a browser.  Fastest, most responsive review path — no matplotlib
+# GUI at all (which the user found slow / frequently unresponsive).
+# Keyboard in the browser: ←/→ step, j/k ±10, or type a number + Go.
+# ════════════════════════════════════════════════════════════════════
+
+_GALLERY_HTML = """<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghost-Probe Event Gallery</title>
+<style>
+  html,body{margin:0;height:100%;background:#11141a;color:#ddd;
+    font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  body{display:flex;flex-direction:column}
+  .bar{display:flex;gap:12px;align-items:center;padding:8px 14px;
+    background:#1a1d22;border-bottom:1px solid #333;font-size:14px;flex-wrap:wrap}
+  #counter{font-weight:bold;color:#fff;min-width:64px}
+  .hint{color:#8a8f99;font-size:12px}
+  .cap{color:#aab;font-size:12px;flex:1;min-width:200px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  button{background:#2a2f3a;color:#ddd;border:1px solid #444;border-radius:4px;
+    padding:4px 12px;cursor:pointer}
+  button:hover{background:#353b48}
+  input{width:74px;background:#0d0f13;color:#ddd;border:1px solid #444;
+    border-radius:4px;padding:3px 6px}
+  #wrap{flex:1;display:flex;align-items:center;justify-content:center;
+    overflow:auto;padding:10px}
+  img{max-width:100%;max-height:100%;box-shadow:0 0 24px #000}
+</style>
+</head>
+<body>
+  <div class="bar">
+    <span id="counter">1 / __N__</span>
+    <button onclick="go(-1)">&#8592; Prev</button>
+    <button onclick="go(1)">Next &#8594;</button>
+    <span class="hint">&#8593;/&#8595; or j/k = &plusmn;10</span>
+    <span>goto <input id="jump" type="number" min="1" value="1">
+      <button onclick="jumpTo()">Go</button></span>
+    <span id="cap" class="cap"></span>
+  </div>
+  <div id="wrap"><img id="view" src="" alt="event"></div>
+<script>
+const data = __DATA__;
+let i = 0;
+function show(){
+  document.getElementById('view').src = data[i].f;
+  document.getElementById('counter').textContent = (i+1)+' / '+data.length;
+  document.getElementById('cap').textContent = data[i].c;
+  document.getElementById('jump').value = i+1;
+  document.title = 'Event '+(i+1)+' / '+data.length;
+}
+function go(d){ i=Math.max(0,Math.min(data.length-1,i+d)); show(); }
+function jumpTo(){
+  const v=parseInt(document.getElementById('jump').value,10);
+  if(v>=1 && v<=data.length){ i=v-1; show(); }
+}
+document.addEventListener('keydown', e=>{
+  if(e.key==='ArrowRight'||e.key==='ArrowDown') go(1);
+  else if(e.key==='ArrowLeft'||e.key==='ArrowUp') go(-1);
+  else if(e.key==='j') go(10);
+  else if(e.key==='k') go(-10);
+  else if(e.key==='q') window.close();
+});
+show();
+</script>
+</body>
+</html>
+"""
+
+
+def _write_gallery_html(out_dir: str, names: List[str],
+                        captions: List[str]) -> None:
+    """Write index.html with an embedded JSON array of {file, caption}."""
+    items = [{"f": n, "c": c} for n, c in zip(names, captions)]
+    data_js = json.dumps(items, ensure_ascii=False)
+    html = _GALLERY_HTML.replace("__DATA__", data_js).replace(
+        "__N__", str(len(names)))
+    Path(out_dir, "index.html").write_text(html, encoding="utf-8")
+
+
+def build_web_gallery(nusc: NuScenes, events: List[Dict],
+                      label_filter: int = 1, max_events: int = 80,
+                      out_dir: str = None) -> None:
+    """Render every event to a PNG and build a browser-viewable gallery.
+
+    Reuses HeadlessEventBrowser's per-event renderer (identical visuals to
+    the GUI/headless views), so the QA picture is exactly the same — just
+    served as static images in a fast HTML page instead of a matplotlib
+    window.  Open the resulting index.html in any browser.
+    """
+    out_dir = out_dir or str(_REPO_ROOT / 'PA_gen_v2' / 'output' / 'web')
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+    # Reuse the headless renderer; point its output dir at the gallery dir.
+    hb = HeadlessEventBrowser(nusc, events, start_idx=0,
+                              label_filter=label_filter)
+    # Cap how many events we render (galleries with hundreds of PNGs are
+    # still fine, but 80 keeps it snappy by default).
+    if max_events and max_events > 0:
+        hb.events = hb.events[:max_events]
+    if not hb.events:
+        print("No events to render for the gallery.")
+        return
+
+    names, captions, total = [], [], len(hb.events)
+    for i in range(total):
+        hb.idx = i
+        hb._render()                       # → event_{i:04d}.png in out_dir
+        ev = hb.events[i]
+        scene = nusc.get('scene', ev['scene_token'])
+        ex, ey = ev['emerge_bev_xy']
+        d = float((ex * ex + ey * ey) ** 0.5)
+        lbl = 'GHOST' if ev['label'] == 1 else 'VISIBLE'
+        cap = (f"{scene['name']} | {lbl} | dist {d:.1f} m | "
+               f"osz {ev['n_osz_frames']} | {ev['instance_token'][:12]}")
+        names.append(Path(hb.out_path).name)
+        captions.append(cap)
+        if (i + 1) % 10 == 0 or i + 1 == total:
+            print(f"  rendered {i + 1}/{total} ...")
+
+    _write_gallery_html(out_dir, names, captions)
+    html = str(Path(out_dir) / 'index.html')
+    print(f"\nGallery ready: {total} events → {html}")
+    print("Opening in your default browser...")
+    try:
+        webbrowser.open(html)
+    except Exception:
+        print("  (could not auto-open; open the file manually)")
+
+    print("\nHow to view:")
+    print(f"  • Local : open  {html}")
+    print(f"  • Server: scp -r {out_dir} <you>@<laptop>:/tmp/  then open index.html")
+    print(f"           or run  python -m http.server --directory {out_dir} 8080")
+    print(f"           and visit http://<server>:8080/")
+    print("  • Keys  : ←/→ or ↑/↓ flip; j/k jump ±10; type a number + Go.")
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataroot', required=True,
@@ -994,6 +1136,14 @@ if __name__ == '__main__':
                         help='With --browse: force terminal + PNG mode '
                              '(no GUI window). Useful if no display is '
                              'available or WebAgg is awkward.')
+    parser.add_argument('--web', action='store_true',
+                        help='Render every event to a static PNG and build a '
+                             'browser-viewable gallery (index.html). No '
+                             'matplotlib window — open the HTML in any browser '
+                             'and use arrow keys / j / k to flip through.')
+    parser.add_argument('--web_max', type=int, default=80,
+                        help='(with --web) max events to render into the '
+                             'gallery. Set 0 for all.')
     parser.add_argument('--label_filter', type=int, default=1,
                         help='Browser subset: 1=positives (default), '
                              '0=negatives, -1=all.')
@@ -1010,7 +1160,13 @@ if __name__ == '__main__':
 
     print_event_stats(events)
 
-    if args.browse:
+    if args.web:
+        print(f"\nBuilding web gallery "
+              f"(label_filter={args.label_filter}, "
+              f"max={args.web_max or 'all'})...")
+        build_web_gallery(nusc, events, label_filter=args.label_filter,
+                          max_events=args.web_max)
+    elif args.browse:
         print(f"\nLaunching EventBrowser "
               f"(label_filter={args.label_filter}, "
               f"{len([e for e in events if args.label_filter < 0 or e['label'] == args.label_filter])} events)...")
