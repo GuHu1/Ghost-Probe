@@ -59,6 +59,11 @@ def cast_osz_2d(bev_occ: np.ndarray,
     ray casting itself can use a small, safe substep without worrying
     about missing thin walls — there are none.
 
+    Vectorized implementation: all ~12 500 rays are advanced simultaneously
+    per step using numpy, so the outer loop runs max_steps (~2 000) times
+    instead of n_angles × max_steps (~25 million) times.  Output is
+    bit-for-bit identical to the original per-ray loop.
+
     Args:
         bev_occ : (nx, ny) bool, solid obstacle map (no point-density gaps)
         caster  : provides nx, ny, bev_range, bev_res
@@ -88,28 +93,49 @@ def cast_osz_2d(bev_occ: np.ndarray,
     n_angles = max(n_angles, 720)   # floor at 0.5° even for small grids
     angles = np.linspace(0, 2 * np.pi, n_angles, endpoint=False)
 
-    cos_a = np.cos(angles)
-    sin_a = np.sin(angles)
+    # Per-ray step increments (in cells)
+    dx = np.cos(angles) * substep   # (n_angles,)
+    dy = np.sin(angles) * substep
+
+    # Current positions — all rays start at ego
+    x = np.full(n_angles, float(ego_xi))
+    y = np.full(n_angles, float(ego_yi))
+
+    hit    = np.zeros(n_angles, dtype=bool)   # has this ray hit an occluder?
+    active = np.ones(n_angles, dtype=bool)     # is this ray still in bounds?
+
     max_steps = int(max_range_cells / substep)
 
-    for ray_idx in range(n_angles):
-        dx, dy = cos_a[ray_idx], sin_a[ray_idx]
-        x, y = float(ego_xi), float(ego_yi)
-        hit = False
+    for _ in range(max_steps):
+        # Advance all active rays by one substep
+        x[active] += dx[active]
+        y[active] += dy[active]
 
-        for _ in range(max_steps):
-            x += dx * substep
-            y += dy * substep
-            xi_i = int(round(x))
-            yi_i = int(round(y))
+        # Snap to grid indices
+        xi = np.rint(x).astype(np.int32)
+        yi = np.rint(y).astype(np.int32)
 
-            if not (0 <= xi_i < nx and 0 <= yi_i < ny):
-                break
+        # Deactivate rays that left the grid
+        in_b = (xi >= 0) & (xi < nx) & (yi >= 0) & (yi < ny)
+        active &= in_b
+        if not active.any():
+            break
 
-            if hit:
-                osz_mask[xi_i, yi_i] = True
-            elif bev_occ[xi_i, yi_i]:
-                hit = True   # this cell itself is the occluder, not shadow
+        # Sample occupancy at current cell for all active rays
+        idx  = np.where(active)[0]
+        xi_a = xi[idx]
+        yi_a = yi[idx]
+        occ  = bev_occ[xi_a, yi_a]
+
+        # Rays that hit an occluder in a PREVIOUS step → current cell is
+        # behind the wall → mark as OSZ.  (The occluder cell itself is NOT
+        # marked — only cells after it.)
+        prev_hit = hit[idx]
+        osz_mask[xi_a[prev_hit], yi_a[prev_hit]] = True
+
+        # Update hit status: any active ray whose current cell is an
+        # occluder becomes hit (from this step onward).
+        hit[idx] |= occ
 
     return osz_mask
 

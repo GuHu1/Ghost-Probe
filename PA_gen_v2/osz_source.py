@@ -148,6 +148,42 @@ _pa_cache: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
 _warned_map_unavailable = False   # print the "no map" warning once, not per-sample
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Disk cache — persists computed OSZ results so visualization / re-mining
+# doesn't recompute the expensive 3D voxel cast + 2D ray casting every run.
+# One .npz per sample_token, under a config-keyed subdirectory so changing
+# BEV_EXTENT_M / BEV_RESOLUTION_M / Z gates automatically invalidates.
+# ─────────────────────────────────────────────────────────────────────
+import hashlib as _hashlib
+
+def _disk_cache_dir() -> Path:
+    """Config-keyed cache dir; changes when BEV grid or Z-gate changes."""
+    cfg = f"{BEV_RANGE_XYXY}_{BEV_RESOLUTION_M}_{Z_MIN}_{Z_MAX}_{Z_RES}"
+    h = _hashlib.md5(cfg.encode()).hexdigest()[:8]
+    return _REPO_ROOT / 'PA_gen_v2' / 'output' / 'osz_cache' / h
+
+
+def _disk_load(sample_token: str):
+    """Load cached OSZ from disk; returns None on miss."""
+    p = _disk_cache_dir() / f"{sample_token}.npz"
+    if not p.exists():
+        return None
+    try:
+        d = np.load(p, allow_pickle=False)
+        return (d['bev_occ'], d['osz_raw'], d['osz_pa'], d['drivable_mask'])
+    except Exception:
+        return None
+
+
+def _disk_save(sample_token: str, bev_occ, osz_raw, osz_pa, drivable_mask) -> None:
+    """Persist OSZ result to disk for future runs."""
+    d = _disk_cache_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / f"{sample_token}.npz"
+    np.savez(p, bev_occ=bev_occ, osz_raw=osz_raw,
+             osz_pa=osz_pa, drivable_mask=drivable_mask)
+
+
 def clear_cache() -> None:
     """Clears every cache this module keeps (raw OSZ, drivable mask, PA OSZ)."""
     _cache.clear()
@@ -254,9 +290,20 @@ def get_pa_relevant_osz_for_sample(
         osz_pa        : (nx, ny) bool    — osz_raw ∩ drivable_mask
         drivable_mask : (nx, ny) bool    — from get_drivable_mask_for_sample()
     """
+    # 1) in-memory cache (fastest, per-session)
     if sample_token in _pa_cache:
         return _pa_cache[sample_token]
 
+    # 2) disk cache (fast, cross-session — avoids recomputing the expensive
+    #    3D voxel cast + 2D ray casting on every visualization / re-mining run)
+    disk = _disk_load(sample_token)
+    if disk is not None:
+        bev_occ, osz_raw, osz_pa, drivable_mask = disk
+        result = (bev_occ, osz_raw, osz_pa, drivable_mask)
+        _pa_cache[sample_token] = result
+        return result
+
+    # 3) compute from scratch (slow path)
     bev_occ, osz_raw = get_osz_for_sample(nusc, sample_token)
     drivable_mask = get_drivable_mask_for_sample(nusc, sample_token)
 
@@ -267,6 +314,7 @@ def get_pa_relevant_osz_for_sample(
 
     result = (bev_occ, osz_raw, osz_pa, drivable_mask)
     _pa_cache[sample_token] = result
+    _disk_save(sample_token, bev_occ, osz_raw, osz_pa, drivable_mask)
     return result
 
 

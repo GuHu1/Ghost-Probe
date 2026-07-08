@@ -1086,7 +1086,7 @@ def build_web_gallery(nusc: NuScenes, events: List[Dict],
 
     names, captions, total = [], [], len(hb.events)
     print(f"  Rendering {total} events to {out_dir} ...")
-    print(f"  (each event does 5-frame 3D ray-casting; expect ~20-30s/event)")
+    print(f"  (first run: ~5-15s/event for 3D ray-casting; cached after)")
     import time as _t
     t0 = _t.time()
     for i in range(total):
@@ -1148,9 +1148,11 @@ if __name__ == '__main__':
                              'browser-viewable gallery (index.html). No '
                              'matplotlib window — open the HTML in any browser '
                              'and use arrow keys / j / k to flip through.')
-    parser.add_argument('--web_max', type=int, default=80,
+    parser.add_argument('--web_max', type=int, default=20,
                         help='(with --web) max events to render into the '
-                             'gallery. Set 0 for all.')
+                             'gallery. Set 0 for all. Default 20 keeps the '
+                             'first run under ~5 min; cached OSZ makes '
+                             'subsequent runs near-instant.')
     parser.add_argument('--label_filter', type=int, default=1,
                         help='Browser subset: 1=positives (default), '
                              '0=negatives, -1=all.')
