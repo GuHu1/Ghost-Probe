@@ -60,6 +60,7 @@ import matplotlib.patches as mpatches
 import matplotlib.patheffects as pe
 
 from nuscenes.nuscenes import NuScenes
+import pyquaternion
 
 _THIS_DIR  = Path(__file__).resolve().parent
 _REPO_ROOT = _THIS_DIR.parent
@@ -319,6 +320,167 @@ def _vehicle_pos_in_frame_ego(nusc: NuScenes, instance_token: str,
     return None, 'no_evidence'
 
 
+# ════════════════════════════════════════════════════════════════════
+# BEV GROUND-TRUTH OVERLAY — all annotated objects + HD-map lanes
+# ════════════════════════════════════════════════════════════════════
+# These functions let you see the FULL scene (every vehicle, pedestrian,
+# the road network) on top of the OSZ — so you can verify at a glance
+# whether the ghost vehicle was genuinely occluded and whether the OSZ
+# geometry makes sense given the surrounding traffic and infrastructure.
+
+_map_cache: Dict[str, object] = {}
+
+
+def _bev_box_corners_ego(x_ego, y_ego, heading, w, l):
+    """4 corners of a BEV box in ego frame (x=forward, y=left).
+
+    heading=0 → box faces +x (forward).  Positive heading = left turn
+    (counterclockwise, toward +y).  w=width (lateral), l=length (forward).
+    Returns (4, 2) array of (x_ego, y_ego).
+    """
+    cos_h, sin_h = np.cos(heading), np.sin(heading)
+    R = np.array([[cos_h, -sin_h], [sin_h, cos_h]])
+    local = np.array([[ l/2,  w/2],
+                      [ l/2, -w/2],
+                      [-l/2, -w/2],
+                      [-l/2,  w/2]])
+    corners = local @ R.T
+    corners[:, 0] += x_ego
+    corners[:, 1] += y_ego
+    return corners
+
+
+def _get_scene_annotations_ego(nusc: NuScenes, sample_token: str) -> List[Dict]:
+    """All annotated objects in this sample, transformed to ego frame.
+
+    Each item: {x, y, heading, w, l, category, instance}.
+    x=forward, y=left, heading in radians (0=forward, +=left).
+    """
+    sample = nusc.get('sample', sample_token)
+    ego_t, ego_q = _get_ego_pose(nusc, sample_token)
+
+    anns = []
+    for ann_token in sample['anns']:
+        ann = nusc.get('sample_annotation', ann_token)
+        gpos = np.array(ann['translation'], dtype=np.float32)
+        epos = _global_to_ego(gpos, ego_t, ego_q)
+
+        ann_q = pyquaternion.Quaternion(ann['rotation'])
+        rel_q = ego_q.inverse * ann_q          # ann orientation in ego frame
+        heading = float(rel_q.yaw_pitch_roll[0])
+
+        w, l, h = ann['size']                  # nuScenes: [width, length, height]
+        anns.append({
+            'x': float(epos[0]),
+            'y': float(epos[1]),
+            'heading': heading,
+            'w': float(w), 'l': float(l),
+            'category': ann['category_name'],
+            'instance': ann['instance_token'],
+        })
+    return anns
+
+
+def _draw_annotation_boxes(ax, anns: List[Dict],
+                           tracked_instance: str = None,
+                           tracked_verdict=None) -> None:
+    """Draw all annotation BEV boxes on ax (axes uses ego-y, ego-x)."""
+    for a in anns:
+        if not osz_source.in_bev_range(a['x'], a['y']):
+            continue
+
+        is_tracked = (tracked_instance is not None and
+                      a['instance'] == tracked_instance)
+        cat = a['category']
+
+        if cat.startswith('human'):
+            # Pedestrians: small dots, no box (too small to matter at BEV scale)
+            ax.plot(a['y'], a['x'], 'o', color='#ffeb3b',
+                    markersize=2.5, alpha=0.8)
+            continue
+
+        corners = _bev_box_corners_ego(a['x'], a['y'], a['heading'],
+                                       a['w'], a['l'])
+        # Swap to plot coords: matplotlib x-axis=ego-y, y-axis=ego-x
+        plot_pts = corners[:, [1, 0]]
+
+        if is_tracked:
+            vcolor, _ = VERDICT_STYLE.get(tracked_verdict, VERDICT_STYLE[None])
+            poly = mpatches.Polygon(plot_pts, closed=True,
+                                    facecolor=vcolor, edgecolor='white',
+                                    alpha=0.35, linewidth=1.5, zorder=5)
+            ax.add_patch(poly)
+            # Heading arrow for the tracked vehicle
+            dx = np.cos(a['heading']) * 2.5
+            dy = np.sin(a['heading']) * 2.5
+            ax.annotate('', xy=(a['y'] + dy, a['x'] + dx),
+                        xytext=(a['y'], a['x']),
+                        arrowprops=dict(arrowstyle='->', color='white',
+                                        lw=1.5), zorder=6)
+        elif cat.startswith('vehicle'):
+            poly = mpatches.Polygon(plot_pts, closed=True,
+                                    facecolor='#00e5ff', edgecolor='#0099bb',
+                                    alpha=0.15, linewidth=0.4, zorder=3)
+            ax.add_patch(poly)
+        else:
+            # Barriers, cones, construction objects, etc.
+            poly = mpatches.Polygon(plot_pts, closed=True,
+                                    facecolor='#ff9800', edgecolor='#cc6600',
+                                    alpha=0.12, linewidth=0.3, zorder=3)
+            ax.add_patch(poly)
+
+
+def _draw_map_overlay(ax, nusc: NuScenes, sample_token: str) -> None:
+    """Draw lane boundaries from the nuScenes HD map (if available).
+
+    Uses the node-based polygon access (no shapely dependency) and
+    transforms global-map coordinates to ego frame.  Silently skips
+    if the map expansion module isn't installed or the location has
+    no map data.
+    """
+    try:
+        from nuscenes.map_expansion.map_api import NuScenesMap
+    except ImportError:
+        return
+
+    try:
+        sample = nusc.get('sample', sample_token)
+        log = nusc.get('log', sample['log_token'])
+        location = log['location']
+        if not location:
+            return
+
+        if location not in _map_cache:
+            _map_cache[location] = NuScenesMap(
+                dataroot=nusc.dataroot, map_name=location)
+        nusc_map = _map_cache[location]
+
+        ego_t, ego_q = _get_ego_pose(nusc, sample_token)
+        gx, gy, _ = ego_t
+
+        # Lanes within 55 m of ego — covers the full BEV extent (±50 m)
+        records = nusc_map.get_records_in_radius(
+            float(gx), float(gy), 55.0, ['lane', 'road_segment'])
+
+        for layer in ('lane', 'road_segment'):
+            for tok in records.get(layer, []):
+                rec = nusc_map.get(layer, tok)
+                poly_rec = nusc_map.get('polygon', rec['polygon_token'])
+                nodes = [nusc_map.get('node', nt)
+                         for nt in poly_rec['exterior_node_tokens']]
+                pts = []
+                for nd in nodes:
+                    gpos = np.array([nd['x'], nd['y'], 0.0], dtype=np.float32)
+                    epos = _global_to_ego(gpos, ego_t, ego_q)
+                    pts.append((epos[1], epos[0]))   # (ego-y, ego-x)
+                if len(pts) >= 2:
+                    xs, ys = zip(*pts)
+                    ax.plot(xs, ys, '-', color='#3a5a7a',
+                            linewidth=0.4, alpha=0.5, zorder=1)
+    except Exception:
+        pass    # map not available / wrong location / etc — skip silently
+
+
 def _draw_frame_own_ego(ax, nusc, sample_token, instance_token,
                         verdict, frame_label, traj) -> Optional[float]:
     """
@@ -357,8 +519,9 @@ def _draw_frame_own_ego(ax, nusc, sample_token, instance_token,
     extent, xlim, ylim = _bev_extent(caster)
 
     overlay = np.zeros((*bev_occ.shape, 3), dtype=np.float32)
-    overlay[bev_occ] = [0.30, 0.30, 0.32]
-    overlay[osz_pa]  = [0.80, 0.18, 0.18]
+    overlay[drivable_mask] = [0.10, 0.16, 0.10]   # road surface: subtle green
+    overlay[bev_occ] = [0.30, 0.30, 0.32]          # obstacles: gray
+    overlay[osz_pa]  = [0.80, 0.18, 0.18]          # PA-relevant OSZ: red
     ax.imshow(overlay, origin='lower', extent=extent)
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
@@ -366,12 +529,21 @@ def _draw_frame_own_ego(ax, nusc, sample_token, instance_token,
     for s in ax.spines.values():
         s.set_color('#444')
 
+    # HD-map lane boundaries (thin blue lines) — adds road context.
+    _draw_map_overlay(ax, nusc, sample_token)
+
     # Ego at origin of THIS frame's ego frame.
     ax.plot(0, 0, 'w^', markersize=7,
             path_effects=[pe.withStroke(linewidth=1.5, foreground='black')])
     # Heading tick: ego always faces +x (forward=up) in its own frame.
     ax.annotate('', xy=(0, 3.0), xytext=(0, 0),
                 arrowprops=dict(arrowstyle='->', color='white', lw=1.0))
+
+    # All scene annotations (vehicles=cyan boxes, peds=yellow dots,
+    # tracked vehicle=verdict-coloured box + heading arrow).
+    _anns = _get_scene_annotations_ego(nusc, sample_token)
+    _draw_annotation_boxes(ax, _anns, tracked_instance=instance_token,
+                           tracked_verdict=verdict)
 
     coverage_pct = float(osz_pa.mean()) * 100.0
 
@@ -513,7 +685,8 @@ class EventBrowser:
                 ex, ey = event['emerge_bev_xy']
                 pos_known = (float(ex), float(ey))
                 cov = _draw_frame_own_ego_emerged(
-                    ax, self.nusc, tok, pos_known, label)
+                    ax, self.nusc, tok, pos_known, label,
+                    instance_token=instance_tok)
             else:
                 cov = _draw_frame_own_ego(
                     ax, self.nusc, tok, instance_tok, verdict, label, traj)
@@ -637,7 +810,8 @@ class HeadlessEventBrowser:
             if verdict == 'emerged':
                 ex, ey = event['emerge_bev_xy']
                 cov = _draw_frame_own_ego_emerged(
-                    ax, self.nusc, tok, (float(ex), float(ey)), label)
+                    ax, self.nusc, tok, (float(ex), float(ey)), label,
+                    instance_token=instance_tok)
             elif tok is not None:
                 cov = _draw_frame_own_ego(
                     ax, self.nusc, tok, instance_tok, verdict, label, traj)
@@ -740,7 +914,8 @@ class HeadlessEventBrowser:
 # ── frame-t drawer (uses the stored emerge position verbatim) ─────────
 def _draw_frame_own_ego_emerged(ax, nusc, sample_token,
                                 emerge_xy: Tuple[float, float],
-                                frame_label: str) -> Optional[float]:
+                                frame_label: str,
+                                instance_token: str = None) -> Optional[float]:
     """
     Frame-t drawer: identical to _draw_frame_own_ego but the vehicle
     position comes from the event's stored emerge_bev_xy (already in
@@ -766,8 +941,9 @@ def _draw_frame_own_ego_emerged(ax, nusc, sample_token,
     extent, xlim, ylim = _bev_extent(caster)
 
     overlay = np.zeros((*bev_occ.shape, 3), dtype=np.float32)
-    overlay[bev_occ] = [0.30, 0.30, 0.32]
-    overlay[osz_pa]  = [0.80, 0.18, 0.18]
+    overlay[drivable_mask] = [0.10, 0.16, 0.10]   # road surface: subtle green
+    overlay[bev_occ] = [0.30, 0.30, 0.32]          # obstacles: gray
+    overlay[osz_pa]  = [0.80, 0.18, 0.18]          # PA-relevant OSZ: red
     ax.imshow(overlay, origin='lower', extent=extent)
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
@@ -775,10 +951,16 @@ def _draw_frame_own_ego_emerged(ax, nusc, sample_token,
     for s in ax.spines.values():
         s.set_color('#444')
 
+    _draw_map_overlay(ax, nusc, sample_token)
+
     ax.plot(0, 0, 'w^', markersize=7,
             path_effects=[pe.withStroke(linewidth=1.5, foreground='black')])
     ax.annotate('', xy=(0, 3.0), xytext=(0, 0),
                 arrowprops=dict(arrowstyle='->', color='white', lw=1.0))
+
+    _anns = _get_scene_annotations_ego(nusc, sample_token)
+    _draw_annotation_boxes(ax, _anns, tracked_instance=instance_token,
+                           tracked_verdict='emerged')
 
     coverage_pct = float(osz_pa.mean()) * 100.0
 
@@ -859,11 +1041,22 @@ def _draw_info_panel(ax, nusc, event, idx, total, label_filter,
     add(f'Evidence frames : {n_ev} / {len(event["was_in_osz"])} '
         f'(unknown={n_unk})', '#e8e8e8')
     add('─' * 40, '#444')
+    add('legend:', '#cccccc', 'bold')
+    add('  ■ red     = PA-relevant OSZ (occlusion shadow)', '#ff6b6b')
+    add('  ■ gray    = solid obstacles (walls, vehicles)', '#888')
+    add('  ■ green   = drivable area (road surface)', '#5d9b5d')
+    add('  ■ cyan    = other vehicles (BEV boxes)', '#00e5ff')
+    add('  ■ yellow  = pedestrians', '#ffeb3b')
+    add('  ■ blue    = lane boundaries (HD map)', '#3a5a7a')
+    add('  ★ colored = tracked ghost vehicle + heading', '#9be86b')
+    add('─' * 40, '#444')
     add('read the grid:', '#cccccc', 'bold')
     add('  • car stayed in OSZ?  red dots across t-4..t-1', '#888')
     add('  • when did it come out?  red→green transition', '#888')
     add('  • OSZ moving?  compare red shape across frames', '#888')
     add('  • ego turning?  OSZ shape rotates between frames', '#888')
+    add('  • other cars explain OSZ?  see cyan boxes', '#888')
+    add('  • road makes sense?  green + lane lines', '#888')
     add('─' * 40, '#444')
     add('keys:  n=next   p=prev   r=redraw   q=quit', '#5db7ff', 'bold')
 
