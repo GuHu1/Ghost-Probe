@@ -43,11 +43,7 @@ for _p in (str(_REPO_ROOT), str(_THIS_DIR)):
 
 import osz_source
 from OSZ.visualize.bev_viz import get_gt_boxes_ego, _box_corners_ego
-
-
-def _bev_extent(caster):
-    x_min, x_max, y_min, y_max = caster.bev_range
-    return [y_max, y_min, x_min, x_max], (y_max, y_min), (x_min, x_max)
+from common.bev_config import bev_extent
 
 
 VEHICLE_CATS = {
@@ -74,7 +70,7 @@ def main():
     print(f"Processing sample {args.sample_idx}: {sample_token}")
 
     caster = osz_source.get_caster()
-    extent, xlim, ylim = _bev_extent(caster)
+    extent, xlim, ylim = bev_extent(caster.bev_range)
 
     bev_occ, osz_raw, osz_pa, drivable_mask = \
         osz_source.get_pa_relevant_osz_for_sample(nusc, sample_token)

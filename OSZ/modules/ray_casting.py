@@ -45,7 +45,7 @@ No torch dependency:
 """
 
 import numpy as np
-from typing import Tuple
+from typing import Optional, Tuple
 
 
 def build_bev_occ_from_voxel_cast(
@@ -247,7 +247,7 @@ class RayCaster3D:
         intrinsic: np.ndarray,          # (3, 3)  camera intrinsic K
         cam2ego: np.ndarray,            # (4, 4)  camera → ego extrinsic
         max_depth: float = 70.0,
-        surface_tolerance: float = None,
+        surface_tolerance: Optional[float] = None,
     ) -> np.ndarray:
         """
         Returns V_occ: (nx, ny, nz) bool array marking OCCLUDER SURFACES.

@@ -37,7 +37,12 @@ from pathlib import Path
 
 import numpy as np
 import matplotlib
-matplotlib.use('Agg')
+# NOTE: we deliberately do NOT call matplotlib.use('Agg') at import time.
+# savefig() works under ANY backend — it does not need Agg. Removing the
+# forced Agg lets callers that want plt.show() (e.g. interactive browsing)
+# import this module without their window silently breaking. Callers that
+# only save to files (e.g. run_osz_pipeline.py) set Agg themselves before
+# importing this module so there is no behaviour change for them.
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.colors import ListedColormap
@@ -50,8 +55,13 @@ if str(_REPO_ROOT) not in sys.path:
 
 try:
     from common.bev_config import BEV_RESOLUTION_M as _DEFAULT_BEV_RES
+    from common.bev_config import bev_extent as _bev_extent
 except Exception:
     _DEFAULT_BEV_RES = 0.2
+    # fallback _bev_extent if common/ is unavailable
+    def _bev_extent(bev_range):
+        x_min, x_max, y_min, y_max = bev_range
+        return [y_max, y_min, x_min, x_max], (y_max, y_min), (x_min, x_max)
 
 
 CAMERA_COLORS = {
@@ -66,16 +76,6 @@ CAMERA_COLORS = {
 # ─────────────────────────────────────────────────────────────────────────────
 # Internal helper: unified BEV imshow / contour wrappers
 # ─────────────────────────────────────────────────────────────────────────────
-
-def _bev_extent(bev_range):
-    """Return (extent, xlim, ylim) for imshow/contour calls.
-
-    extent = [y_max, y_min, x_min, x_max]
-      – horizontal axis = ego-y, inverted so ego-LEFT is on the LEFT
-      – vertical   axis = ego-x, forward is UP
-    """
-    x_min, x_max, y_min, y_max = bev_range
-    return [y_max, y_min, x_min, x_max], (y_max, y_min), (x_min, x_max)
 
 
 def _bev_imshow(ax: plt.Axes, data: np.ndarray, bev_range: tuple,

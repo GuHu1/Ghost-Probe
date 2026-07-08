@@ -122,10 +122,10 @@ def aggregate_depth_bev(
 # Self-supervised CNN training (one epoch demo)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def train_cnn_one_epoch(model, optimizer, loss_fn, dataset_frames, caster, _crf_unused, device):
+def train_cnn_one_epoch(model, optimizer, loss_fn, dataset_frames, caster, device):
     """
     Self-supervised single epoch:
-      - GT = geometric + CRF-refined OSZ (pseudo-label from LiDAR)
+      - GT = geometric OSZ (pseudo-label from LiDAR voxel-cast)
       - Input = [geometric_mask, depth_bev] (2 channels)
     Demonstrates the training loop structure; not a full training run.
     """
@@ -414,7 +414,7 @@ def main():
         print("  Running self-supervised CNN training epoch...")
         avg_losses = train_cnn_one_epoch(
             cnn_model, optimizer, loss_fn,
-            all_frames, caster, None, device
+            all_frames, caster, device
         )
         print("\n  Epoch avg losses: "
               + "  ".join(f"{k}={v:.4f}" for k, v in avg_losses.items()))

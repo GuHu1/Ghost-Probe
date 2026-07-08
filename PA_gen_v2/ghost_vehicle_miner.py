@@ -375,8 +375,13 @@ def mine_ghost_events(
     print(f"  Total events:                      {len(all_events)}")
     print(f"{'='*60}\n")
 
-    assert len(positive_events) > 0, \
-        "No positive events found! Check OSZ coverage or lookback logic."
+    if len(positive_events) == 0:
+        print("\n  ⚠  WARNING: No positive ghost emergence events found.")
+        print("  This may be expected if:")
+        print("    - The dataset is very small (e.g. v1.0-mini with few scenes)")
+        print("    - OSZ coverage is insufficient (check --min_osz)")
+        print("    - lookback_k is too large for the scene lengths")
+        print("  Consider reducing --min_osz or --lookback to increase yield.\n")
     for e in all_events[:5]:
         assert 'emerge_sample'   in e
         assert 'emerge_bev_xy'   in e

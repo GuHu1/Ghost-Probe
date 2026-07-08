@@ -20,6 +20,7 @@ import argparse
 from pathlib import Path
 
 import numpy as np
+from typing import Any, Dict, List, Optional, Tuple
 from tqdm import tqdm
 from pyquaternion import Quaternion
 from nuscenes.nuscenes import NuScenes
@@ -93,7 +94,17 @@ PA_NAME = {0: 'Vehicle', 1: 'Pedestrian', 2: 'Cyclist'}
 # ═══════════════════════════════════════════════════════════════════════════
 #  Utilities
 # ═══════════════════════════════════════════════════════════════════════════
-def make_tf(trans, rot, inv=False):
+def make_tf(trans: list, rot: list, inv: bool = False) -> np.ndarray:
+    """Build a 4x4 homogeneous transform matrix from translation + quaternion rotation.
+
+    Args:
+        trans: [x, y, z] translation vector in metres.
+        rot:   [w, x, y, z] quaternion rotation.
+        inv:   If True, return the inverse transform instead.
+
+    Returns:
+        (4, 4) float64 array.
+    """
     R = Quaternion(rot).rotation_matrix
     m = np.eye(4)
     m[:3, :3] = R
@@ -101,7 +112,16 @@ def make_tf(trans, rot, inv=False):
     return np.linalg.inv(m) if inv else m
 
 
-def g2l(nusc, sample_token):
+def g2l(nusc: NuScenes, sample_token: str) -> np.ndarray:
+    """Build global-to-LiDAR 4x4 transform matrix for a given sample.
+
+    Transforms a point from the global (world) frame to the LiDAR sensor
+    frame for the sample's LIDAR_TOP. Used to convert global coordinates
+    to a consistent local reference for BEV grid lookup.
+
+    Returns:
+        (4, 4) float64 homogeneous transform matrix.
+    """
     sam = nusc.get('sample', sample_token)
     sd = nusc.get('sample_data', sam['data'][LIDAR])
     cs = nusc.get('calibrated_sensor', sd['calibrated_sensor_token'])
@@ -112,8 +132,19 @@ def g2l(nusc, sample_token):
     )
 
 
-def get_velocity(nusc, ann_token):
-    ann = nusc.get('sample_annotation', ann_token)
+def get_velocity(nusc: NuScenes, ann_token: str) -> np.ndarray:
+    """Estimate velocity for an annotation via central/backward/forward finite difference.
+
+    Prefers central difference (prev & next annotations both available);
+    falls back to forward or backward. Returns [nan, nan, nan] if fewer
+    than 2 annotations exist for this instance, or if the time gap between
+    annotations exceeds 1.5 seconds.
+
+    Coordinates are in the global (world) frame.
+
+    Returns:
+        (3,) float64 — velocity vector [vx, vy, vz] in m/s, or all NaN.
+    """
     p, n = ann['prev'], ann['next']
     if p and n:
         ap = nusc.get('sample_annotation', p)
@@ -137,7 +168,17 @@ def get_velocity(nusc, ann_token):
     return (d1 - d0) / dt if 0 < dt <= 1.5 else np.full(3, np.nan)
 
 
-def _clip_line(x1, y1, x2, y2, W, H):
+def _clip_line(
+    x1: float, y1: float, x2: float, y2: float, W: int, H: int
+) -> Optional[Tuple[float, float, float, float]]:
+    """Cohen-Sutherland line clipping against image bounds [0, W] × [0, H].
+
+    Used for clipping 3D box edges to the camera image plane before drawing.
+
+    Returns:
+        (x1', y1', x2', y2') of the clipped segment, or None if the entire
+        segment lies outside the image.
+    """
     INSIDE, LEFT, RIGHT, BOTTOM, TOP = 0, 1, 2, 4, 8
 
     def code(x, y):
@@ -177,7 +218,28 @@ def _clip_line(x1, y1, x2, y2, W, H):
             x2, y2, c2 = x, y, code(x, y)
 
 
-def _project_vel_arrow(pos_g, vel_g, ep, cs, K, W, H, scale=1.5):
+def _project_vel_arrow(
+    pos_g: list, vel_g: list, ep: dict, cs: dict,
+    K: np.ndarray, W: int, H: int, scale: float = 1.5
+) -> Optional[Tuple[float, float, float, float]]:
+    """Project a global-frame velocity vector onto the camera image plane.
+
+    Transforms the origin and tip of the velocity arrow from global frame
+    through ego pose and camera extrinsics, then projects onto the image.
+
+    Args:
+        pos_g: [x, y, z] global position of the object centre.
+        vel_g: [vx, vy, vz] global velocity vector.
+        ep:    ego_pose record from nuScenes.
+        cs:    calibrated_sensor record from nuScenes.
+        K:     (3, 3) camera intrinsic matrix.
+        W, H:  Image width and height in pixels.
+        scale: Multiplier for the arrow length (metres → visual arrow).
+
+    Returns:
+        (x0, y0, x1, y1) pixel coordinates of arrow base and tip,
+        or None if the arrow is too short, behind camera, or off-screen.
+    """
     def g2cam(p):
         p = np.array(p, dtype=float)
         p -= np.array(ep['translation'])
@@ -207,7 +269,16 @@ def _project_vel_arrow(pos_g, vel_g, ep, cs, K, W, H, scale=1.5):
 # ═══════════════════════════════════════════════════════════════════════════
 #  Label core
 # ═══════════════════════════════════════════════════════════════════════════
-def _make_neg_label(ann_token, inst, cat, pa_type, pa_type_str, ann):
+def _make_neg_label(
+    ann_token: str, inst: dict, cat: str, pa_type: int,
+    pa_type_str: str, ann: dict
+) -> Dict[str, Any]:
+    """Build a negative (non-emerged) PA label entry.
+
+    Negative labels correspond to occluded annotations that never emerge
+    within the lookback window — they serve as hard-negative training
+    examples for the phantom-agent detector.
+    """
     return {
         'instance_token': inst['token'],
         'category': cat,
@@ -232,7 +303,20 @@ def _make_neg_label(ann_token, inst, cat, pa_type, pa_type_str, ann):
     }
 
 
-def build_all_pa_labels(nusc):
+def build_all_pa_labels(
+    nusc: NuScenes
+) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, List[Dict[str, Any]]]]:
+    """Build positive and negative PA labels for all nuScenes instances.
+
+    Iterates every nuScenes instance track, scanning for visibility
+    transitions (occluded → emerged) that qualify as positive phantom-agent
+    emergence events. Also collects hard-negative frames (occluded but
+    never emerged) for balanced training.
+
+    Returns:
+        pos_labels: {sample_token: [positive_label_dict, ...]}
+        neg_labels: {sample_token: [negative_label_dict, ...]}
+    """
     all_occ_anns, pos_labels = {}, {}
     for inst in tqdm(nusc.instance, desc="Scanning instances"):
         cat = nusc.get('category', inst['category_token'])['name']
@@ -354,7 +438,21 @@ def _draw_gaussian(hm, cr, cc, radius):
     return hm
 
 
-def compute_bev_gt(nusc, sample_token, pa_labels):
+def compute_bev_gt(
+    nusc: NuScenes, sample_token: str, pa_labels: List[Dict[str, Any]]
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Build BEV ground-truth maps (heatmap, velocity, weight, existence).
+
+    For each positive label, places a Gaussian heatmap blob at the
+    emergence position, writes the velocity vector, and computes an
+    adaptive weight map.
+
+    Returns:
+        heatmap:      (H_BEV, W_BEV) float32 — Gaussian peaks at emergence pos.
+        velocity_map: (2, H_BEV, W_BEV) float32 — [vx, vy] ego-frame velocity.
+        weight_map:   (H_BEV, W_BEV) float32 — per-cell sample weight.
+        exist_map:    (H_BEV, W_BEV) float32 — binary existence mask.
+    """
     x0, y0, x1, y1 = BEV_RANGE
     hm = np.zeros((H_BEV, W_BEV), np.float32)
     vm = np.zeros((2, H_BEV, W_BEV), np.float32)
@@ -389,7 +487,21 @@ def compute_bev_gt(nusc, sample_token, pa_labels):
 # ═══════════════════════════════════════════════════════════════════════════
 #  Visualization
 # ═══════════════════════════════════════════════════════════════════════════
-def _draw_3d_box_on_ax(ax, lbl, ep, cs, K, W, H, color, lw=0.7):
+def _draw_3d_box_on_ax(
+    ax: plt.Axes, lbl: dict, ep: dict, cs: dict,
+    K: np.ndarray, W: int, H: int, color: str, lw: float = 0.7
+) -> bool:
+    """Draw a single PA label's 3D bounding box onto a camera image axis.
+
+    Transforms the box from global frame through ego→camera extrinsics,
+    projects 12 edges, clips each to the image bounds via Cohen-Sutherland,
+    and draws them. Also places a text label with visibility, type, and
+    emergence velocity.
+
+    Returns:
+        True if at least one edge was drawn, False if the box is entirely
+        behind camera or off-screen.
+    """
     prior_lwh = PA_SIZE_PRIOR[lbl['pa_type']]
     prior_wlh = [prior_lwh[1], prior_lwh[0], prior_lwh[2]]
     box = Box(lbl['translation_current'], prior_wlh, Quaternion(lbl['rotation_current']))
@@ -431,8 +543,17 @@ def _draw_3d_box_on_ax(ax, lbl, ep, cs, K, W, H, color, lw=0.7):
     return True, cx, cy, x2d, y2d
 
 
-def visualize_multicam(nusc, sample_token, frame_labels, save_path, dataroot):
-    """Three-camera visualization: 3D boxes + pos/neg labels + V_emerge arrows."""
+def visualize_multicam(
+    nusc: NuScenes, sample_token: str, frame_labels: list,
+    save_path: str, dataroot: str
+) -> None:
+    """Three-camera visualization: CAM_FRONT + FRONT_LEFT + FRONT_RIGHT.
+
+    Projects 3D bounding boxes (using fixed size priors) onto each camera
+    image, draws clipped wireframes, overlays velocity arrows, and
+    annotates with visibility level + emergence velocity. Output saved as
+    a single wide PNG.
+    """
     sample = nusc.get('sample', sample_token)
     G2L = g2l(nusc, sample_token)
     near = [l for l in frame_labels
@@ -486,8 +607,18 @@ def visualize_multicam(nusc, sample_token, frame_labels, save_path, dataroot):
     plt.close()
 
 
-def visualize_bev(nusc, sample_token, frame_labels, frame_data, save_path):
-    """BEV heatmap base layer + vector overlay (rotated boxes, stars, links, V_emerge arrows)."""
+def visualize_bev(
+    nusc: NuScenes, sample_token: str, frame_labels: list,
+    frame_data: dict, save_path: str
+) -> None:
+    """BEV top-down overview with heatmap, rotated boxes, and velocity arrows.
+
+    Displays Gaussian heatmap as the base layer (emergence GT), overlaid
+    with oriented bounding boxes for current-object positions, star markers
+    for emergence locations, and dashed arrow links between them. Velocity
+    arrows show the direction and magnitude of the emergence speed at the
+    GT emergence point.
+    """
     sample = nusc.get('sample', sample_token)
     sd = nusc.get('sample_data', sample['data'][LIDAR])
     cs = nusc.get('calibrated_sensor', sd['calibrated_sensor_token'])
@@ -596,7 +727,15 @@ def visualize_bev(nusc, sample_token, frame_labels, frame_data, save_path):
 # ═══════════════════════════════════════════════════════════════════════════
 #  File copy
 # ═══════════════════════════════════════════════════════════════════════════
-def copy_sensor_files(nusc, sample_token, base, dataroot):
+def copy_sensor_files(
+    nusc: NuScenes, sample_token: str, base: Path, dataroot: str
+) -> None:
+    """Copy camera images + LiDAR sweeps for one sample to the output tree.
+
+    Copies the 6 camera images, LIDAR_TOP point cloud, and up to N_SWEEPS
+    previous LiDAR sweeps, preserving the nuScenes directory layout under
+    `base/`.
+    """
     sam = nusc.get('sample', sample_token)
     for ch in list(CAMERAS) + [LIDAR]:
         sd = nusc.get('sample_data', sam['data'][ch])
@@ -620,7 +759,8 @@ def copy_sensor_files(nusc, sample_token, base, dataroot):
         count += 1
 
 
-def copy_maps_and_meta(dataroot, base, version):
+def copy_maps_and_meta(dataroot: str, base: Path, version: str) -> None:
+    """Copy HD maps and nuScenes metadata (table .json files) to the output tree."""
     for sub in ['maps', version]:
         src = Path(dataroot) / sub
         dst = base / sub
@@ -632,8 +772,16 @@ def copy_maps_and_meta(dataroot, base, version):
 #  Main
 # ═══════════════════════════════════════════════════════════════════════════
 def main(version: str, dataroot: str, outdir_base: str,
-         no_copy: bool = False, vis_n: int = 5):
-    """Run the PA label generation pipeline for a given nuScenes split."""
+         no_copy: bool = False, vis_n: int = 5) -> None:
+    """Run the PA label generation pipeline for a given nuScenes split.
+
+    Pipeline stages:
+      1. Annotation scan  — build positive/negative PA labels
+      2. BEV GT computation — Gaussian heatmaps + velocity maps
+      3. Serialization   — save .pkl files for training
+      4. File copy       — mirror nuScenes sensor files to output tree
+      5. Visualization   — generate multi-cam + BEV preview images
+    """
     out = Path(outdir_base)
     for d in [out / 'full', out / 'positive', out / 'negative', out / 'preview']:
         d.mkdir(parents=True, exist_ok=True)
@@ -769,13 +917,12 @@ def parse_and_run(
     version: str,
     dataroot: str,
     outdir_base: str,
-):
-    """
-    Thin CLI wrapper around `main`.
+) -> None:
+    """CLI entry point: parse args, override defaults, then run `main`.
 
-    The calling script supplies split-specific defaults for version/dataroot/
-    outdir_base; the user can override any of them on the command line without
-    editing the file.
+    The calling script (create_pa_labels_mini.py / _full.py) supplies
+    split-specific defaults; the user can override any of them on the
+    command line without editing the file.
     """
     parser = argparse.ArgumentParser()
     parser.add_argument('--version',    type=str, default=version,

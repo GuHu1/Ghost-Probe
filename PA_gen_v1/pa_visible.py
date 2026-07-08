@@ -18,6 +18,7 @@ Output (under OUTDIR_BASE):
 """
 
 import pickle, shutil
+from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
@@ -79,13 +80,29 @@ PA_NAME  = {0:'Vehicle',  1:'Pedestrian', 2:'Cyclist'}
 
 # ── Utilities ────────────────────────────────────────────────────────
 
-def make_tf(trans, rot, inv=False):
-    R = Quaternion(rot).rotation_matrix
+def make_tf(trans: list, rot: list, inv: bool = False) -> np.ndarray:
+    """Build a 4x4 homogeneous transform from translation + quaternion rotation.
+
+    Args:
+        trans: [x, y, z] translation vector in metres.
+        rot:   [w, x, y, z] quaternion rotation.
+        inv:   If True, return the inverse transform instead.
+
+    Returns:
+        (4, 4) float64 array.
+    """
     m = np.eye(4); m[:3,:3]=R; m[:3,3]=np.array(trans)
     return np.linalg.inv(m) if inv else m
 
-def get_velocity(nusc, ann_token):
-    """Estimate velocity by central/back/forward finite difference (global frame)."""
+def get_velocity(nusc: NuScenes, ann_token: str) -> np.ndarray:
+    """Estimate velocity via central/backward/forward finite difference.
+
+    Prefers central difference when both prev and next annotations exist.
+    Returns [nan, nan, nan] if fewer than 2 annotations or time gap > 1.5s.
+
+    Returns:
+        (3,) float64 — global-frame velocity vector [vx, vy, vz] in m/s.
+    """
     ann = nusc.get('sample_annotation', ann_token)
     p, n = ann['prev'], ann['next']
     if p and n:
@@ -110,8 +127,12 @@ def get_velocity(nusc, ann_token):
     return (d1 - d0) / dt if 0 < dt <= 1.5 else np.full(3, np.nan)
 
 
-def g2l(nusc, sample_token):
-    """Global -> LiDAR(T) 4x4 transform matrix."""
+def g2l(nusc: NuScenes, sample_token: str) -> np.ndarray:
+    """Build the global-to-LiDAR 4x4 transform for a given sample.
+
+    Returns:
+        (4, 4) float64 homogeneous transform matrix.
+    """
     sam = nusc.get('sample', sample_token)
     sd  = nusc.get('sample_data', sam['data'][LIDAR])
     cs  = nusc.get('calibrated_sensor', sd['calibrated_sensor_token'])
@@ -121,8 +142,16 @@ def g2l(nusc, sample_token):
         make_tf(cs['translation'], cs['rotation'])
     )
 
-def _project_vel_arrow(pos_global, vel_global, ep, cs, K, W, H, scale=1.5):
-    """Project a global velocity vector into the image plane; return (x0,y0,x1,y1) or None."""
+def _project_vel_arrow(
+    pos_global: list, vel_global: list, ep: dict, cs: dict,
+    K: np.ndarray, W: int, H: int, scale: float = 1.5
+) -> Optional[Tuple[float, float, float, float]]:
+    """Project a global-frame velocity vector onto the camera image plane.
+
+    Returns:
+        (x0, y0, x1, y1) pixel coords of arrow base and tip, or None if
+        the arrow is too short, behind camera, or off-screen.
+    """
     def g2cam(p):
         p = np.array(p, dtype=float)
         p -= np.array(ep['translation'])
@@ -431,9 +460,11 @@ def visualize_bev_occluded(nusc, sample_token, frame_labels, save_path):
 
 # ── File copy ────────────────────────────────────────────────────────
 
-def copy_files(nusc, token, dataroot: str = DATAROOT,
-               outdir_base: str = OUTDIR_BASE):
-    base = Path(outdir_base)/'occluded_frames'
+def copy_files(
+    nusc: NuScenes, token: str, dataroot: str = DATAROOT,
+    outdir_base: str = OUTDIR_BASE
+) -> None:
+    """Copy camera images for one sample to the output tree, preserving layout."""
     sam  = nusc.get('sample', token)
     for ch in CAMERAS:
         sd  = nusc.get('sample_data', sam['data'][ch])
@@ -447,7 +478,9 @@ def copy_files(nusc, token, dataroot: str = DATAROOT,
 
 # ── Main ─────────────────────────────────────────────────────────────
 
-def main():
+def main() -> None:
+    """Run occluded PA target visualization: collect visibility<=1 annotations,
+    generate multi-camera and BEV overview images, save labels as pkl."""
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataroot',    type=str, default=DATAROOT,

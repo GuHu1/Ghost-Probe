@@ -88,6 +88,7 @@ for _p in (str(_REPO_ROOT), str(_THIS_DIR)):
 
 import osz_source
 from ghost_vehicle_miner import _get_ego_pose, _global_to_ego, load_events, LOOKBACK_FRAMES
+from common.bev_config import bev_extent as _bev_extent
 from trajectory import build_instance_trajectories, locate_at_time, NO_EVIDENCE
 
 
@@ -151,19 +152,6 @@ def _hex_to_rgb(h: str):
 
 
 
-def _bev_extent(caster):
-    """
-    Same convention as OSZ/visualize/bev_viz.py's _bev_extent: forward=UP,
-    ego-left=LEFT, no transpose applied to the (nx,ny) array. Kept local
-    here (not imported) to avoid a hard dependency of PA_gen_v2/ on OSZ's
-    plotting internals — this is 6 lines of pure arithmetic, cheap to
-    duplicate, easy to eyeball-verify against the OSZ/ original if ever
-    in doubt.
-    """
-    x_min, x_max, y_min, y_max = caster.bev_range
-    return [y_max, y_min, x_min, x_max], (y_max, y_min), (x_min, x_max)
-
-
 # ════════════════════════════════════════════════════════════════════
 # OFFLINE: single-event drawer (collapses all lookback into frame-t ego)
 # ════════════════════════════════════════════════════════════════════
@@ -184,7 +172,7 @@ def visualize_event(nusc: NuScenes, event: Dict, ax: plt.Axes,
     bev_occ, osz_raw, osz_pa, drivable_mask = \
         osz_source.get_pa_relevant_osz_for_sample(nusc, emerge_tok)
     caster = osz_source.get_caster()
-    extent, xlim, ylim = _bev_extent(caster)
+    extent, xlim, ylim = _bev_extent(caster.bev_range)
 
     # bev_occ / osz_pa are (nx, ny) with axis-0=ego-x, axis-1=ego-y —
     # imshow with this extent and NO transpose places axis-0 on the
@@ -588,7 +576,7 @@ def _draw_frame_own_ego(ax, nusc, sample_token, instance_token,
         return None
 
     caster = osz_source.get_caster()
-    extent, xlim, ylim = _bev_extent(caster)
+    extent, xlim, ylim = _bev_extent(caster.bev_range)
 
     overlay = np.zeros((*bev_occ.shape, 3), dtype=np.float32)
     overlay[:] = _hex_to_rgb(PALETTE['panel_bg'])  # white base
@@ -1012,7 +1000,7 @@ def _draw_frame_own_ego_emerged(ax, nusc, sample_token,
         return None
 
     caster = osz_source.get_caster()
-    extent, xlim, ylim = _bev_extent(caster)
+    extent, xlim, ylim = _bev_extent(caster.bev_range)
 
     overlay = np.zeros((*bev_occ.shape, 3), dtype=np.float32)
     overlay[:] = _hex_to_rgb(PALETTE['panel_bg'])

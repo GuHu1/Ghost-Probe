@@ -30,6 +30,8 @@ Note on OSZ disk cache invalidation (PA_gen_v2/osz_source.py):
     `PA_gen_v2/output/osz_cache/<old_hash>/`.
 """
 
+from typing import Tuple
+
 # ─────────────────────────────────────────────────────────────────────
 # THE TWO NUMBERS THAT DEFINE THE PROJECT'S ENTIRE BEV GRID
 # ─────────────────────────────────────────────────────────────────────
@@ -85,18 +87,42 @@ def describe() -> str:
 # so there is exactly one implementation to trust.
 # ─────────────────────────────────────────────────────────────────────
 
-def bev_coords_to_pixel(x_ego: float, y_ego: float):
-    """metric (x, y) in ego frame -> BEV pixel (col, row). Ego at BEV_CENTER."""
+def bev_coords_to_pixel(x_ego: float, y_ego: float) -> Tuple[int, int]:
+    """Convert metric (x, y) in ego frame to BEV pixel (col, row).
+
+    Ego vehicle is always at (BEV_CENTER, BEV_CENTER) in pixel space.
+    """
     col = int((x_ego + BEV_RANGE_M) / BEV_RESOLUTION_M)
     row = int((y_ego + BEV_RANGE_M) / BEV_RESOLUTION_M)
     return col, row
 
 
-def pixel_to_bev_coords(col: int, row: int):
-    """Inverse of bev_coords_to_pixel."""
+def pixel_to_bev_coords(col: int, row: int) -> Tuple[float, float]:
+    """Inverse of bev_coords_to_pixel: BEV pixel (col, row) -> metric (x, y).
+
+    Returns the centre coordinates of the BEV cell in ego frame.
+    """
     x = col * BEV_RESOLUTION_M - BEV_RANGE_M
     y = row * BEV_RESOLUTION_M - BEV_RANGE_M
     return x, y
+
+
+def bev_extent(bev_range: Tuple[float, float, float, float]) -> Tuple[
+    list, Tuple[float, float], Tuple[float, float]]:
+    """Return (extent, xlim, ylim) for matplotlib imshow/contour calls.
+
+    Args:
+        bev_range: (x_min, x_max, y_min, y_max) in ego frame (metres).
+
+    Returns:
+        extent: [y_max, y_min, x_min, x_max] — horizontal axis = ego-y
+                (inverted so ego-left appears on the LEFT), vertical
+                axis = ego-x (forward = UP).
+        xlim: (y_max, y_min) — for ax.set_xlim()
+        ylim: (x_min, x_max) — for ax.set_ylim()
+    """
+    x_min, x_max, y_min, y_max = bev_range
+    return [y_max, y_min, x_min, x_max], (y_max, y_min), (x_min, x_max)
 
 
 if __name__ == '__main__':
