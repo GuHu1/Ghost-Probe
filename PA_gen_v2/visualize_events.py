@@ -593,7 +593,7 @@ class HeadlessEventBrowser:
 
         event = self.events[self.idx]
         instance_tok = event['instance_token']
-        traj = build_instance_trajectories(self.nusc).get(instance_tok)
+        traj = build_instance_trajectories(self.nusc, {instance_tok}).get(instance_tok)
 
         lookback = event.get('lookback_tokens', [])
         was_in_osz = event.get('was_in_osz', [])
