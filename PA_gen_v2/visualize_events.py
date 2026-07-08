@@ -66,7 +66,7 @@ for _p in (str(_REPO_ROOT), str(_THIS_DIR)):
         sys.path.insert(0, _p)
 
 import osz_source
-from ghost_vehicle_miner import _get_ego_pose, _global_to_ego, load_events
+from ghost_vehicle_miner import _get_ego_pose, _global_to_ego, load_events, LOOKBACK_FRAMES
 from trajectory import build_instance_trajectories, locate_at_time, NO_EVIDENCE
 
 
@@ -593,19 +593,18 @@ class HeadlessEventBrowser:
 
         event = self.events[self.idx]
         instance_tok = event['instance_token']
-        traj = trajectory.build_instance_trajectories(
-            self.nusc).get(instance_tok)
+        traj = build_instance_trajectories(self.nusc).get(instance_tok)
 
         lookback = event.get('lookback_tokens', [])
         was_in_osz = event.get('was_in_osz', [])
         frames = []          # [(sample_token_or_None, verdict, label_str)]
-        for i in range(LOOKBACK_K):  # t-4 .. t-1
+        for i in range(LOOKBACK_FRAMES):  # t-4 .. t-1
             if i < len(lookback):
                 tok = lookback[i]
                 verdict = was_in_osz[i] if i < len(was_in_osz) else None
-                frames.append((tok, verdict, f't-{LOOKBACK_K - i - 1}'))
+                frames.append((tok, verdict, f't-{LOOKBACK_FRAMES - i - 1}'))
             else:
-                frames.append((None, None, f't-{LOOKBACK_K - i - 1}'))
+                frames.append((None, None, f't-{LOOKBACK_FRAMES - i - 1}'))
         # Emergence frame t.
         frames.append((event['emerge_sample'], 'emerged', 't'))
 
@@ -629,9 +628,9 @@ class HeadlessEventBrowser:
                 cov = None
             coverages.append(cov)
 
-        _draw_info_panel(axes[2, 2], self.nusc, event, self.idx,
-                         len(self.events), frames, coverages,
-                         self.label_filter)
+        _draw_info_panel(axes[1, 2], self.nusc, event, self.idx,
+                         len(self.events), self.label_filter,
+                         coverages, frames)
 
         fig.suptitle(f'Ghost-Probe Event Browser  [{self.idx+1} / '
                      f'{len(self.events)}]   (headless mode)',
