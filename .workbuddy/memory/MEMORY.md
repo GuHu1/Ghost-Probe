@@ -12,7 +12,8 @@
   - `osz_source.py` — OSZ 单一入口，缓存 per-frame 结果。
   - `ghost_vehicle_miner.py` — 事件挖掘核心。
   - `trajectory.py` — 轨迹插值（KNOWN/INTERPOLATED/NO_EVIDENCE 三态）。
-  - `visualize_events.py` — 事件可视化（离线 PNG + 交互式 Event Browser）。
+  - `visualize_events.py` — 事件可视化（离线 PNG + 交互式 Event Browser + `--web` 浏览器图廊）。
+  - `analyze_distances.py` — 正样本 emergence 距离分布统计 + 数据驱动阈值建议。)
 
 ## 关键坐标约定（极易踩坑）
 - BEV 数组 (nx,ny)：axis-0=ego-x(前), axis-1=ego-y(左)。索引 mask[i,j]。

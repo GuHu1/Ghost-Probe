@@ -1075,6 +1075,7 @@ def build_web_gallery(nusc: NuScenes, events: List[Dict],
     # Reuse the headless renderer; point its output dir at the gallery dir.
     hb = HeadlessEventBrowser(nusc, events, start_idx=0,
                               label_filter=label_filter)
+    hb.out_dir = out_dir                   # ← redirect PNGs into the gallery dir
     # Cap how many events we render (galleries with hundreds of PNGs are
     # still fine, but 80 keeps it snappy by default).
     if max_events and max_events > 0:
@@ -1084,6 +1085,10 @@ def build_web_gallery(nusc: NuScenes, events: List[Dict],
         return
 
     names, captions, total = [], [], len(hb.events)
+    print(f"  Rendering {total} events to {out_dir} ...")
+    print(f"  (each event does 5-frame 3D ray-casting; expect ~20-30s/event)")
+    import time as _t
+    t0 = _t.time()
     for i in range(total):
         hb.idx = i
         hb._render()                       # → event_{i:04d}.png in out_dir
@@ -1096,8 +1101,10 @@ def build_web_gallery(nusc: NuScenes, events: List[Dict],
                f"osz {ev['n_osz_frames']} | {ev['instance_token'][:12]}")
         names.append(Path(hb.out_path).name)
         captions.append(cap)
-        if (i + 1) % 10 == 0 or i + 1 == total:
-            print(f"  rendered {i + 1}/{total} ...")
+        elapsed = _t.time() - t0
+        eta = elapsed / (i + 1) * (total - i - 1)
+        print(f"  [{i + 1:3d}/{total}] {Path(hb.out_path).name}  "
+              f"({elapsed:.0f}s elapsed, ~{eta:.0f}s remaining)")
 
     _write_gallery_html(out_dir, names, captions)
     html = str(Path(out_dir) / 'index.html')
