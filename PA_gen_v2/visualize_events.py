@@ -31,14 +31,16 @@ Three modes (pick with CLI flag):
         +---------+---------+---------+
 
      Per-panel layers (zorder low->high):
-       - drivable area (dark green)
-       - voxel-cast obstacles (gray)
-       - PA-relevant OSZ (red)
-       - HD map lane boundaries (thin blue, from NuScenesMap)
-       - other scene vehicles (cyan BEV boxes with heading)
-       - pedestrians (yellow dots)
-       - the tracked vehicle (verdict-coloured box + white heading arrow)
-       - ego marker (white triangle) at frame's own origin
+       - white background
+       - non-drivable ground (light gray / green)
+       - drivable area / road (dark gray)
+       - voxel-cast obstacles (orange)  — walls, parked cars, etc.
+       - PA-relevant OSZ (black shadow)
+       - HD map lane boundaries (thin white lines)
+       - other scene vehicles (orange if visible, red if inside OSZ)
+       - pedestrians (dark dots)
+       - the tracked vehicle (verdict-coloured box + heading arrow)
+       - ego marker (blue triangle) at frame's own origin
 
      Why "own ego frame" per panel: each frame's OSZ is computed in
      that frame's ego coordinates by osz_source (ego sits at the
@@ -77,6 +79,13 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import matplotlib.patheffects as pe
 
+try:
+    from scipy.ndimage import binary_dilation
+    _SCIPY_AVAILABLE = True
+except ImportError:
+    binary_dilation = None
+    _SCIPY_AVAILABLE = False
+
 from nuscenes.nuscenes import NuScenes
 import pyquaternion
 
@@ -109,24 +118,27 @@ VERDICT_STYLE = {
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Unified light-theme colour palette (academic-style BEV figure)
+# High-contrast light-theme colour palette (matches user reference).
 # ─────────────────────────────────────────────────────────────────────
-# White background, light-grey road, black occlusion shadow, orange/blue
-# vehicles — matches the reference style the user provided.
+# White background, dark-grey road, light-grey sidewalk, green grass,
+# orange occluders, black OSZ shadow, blue ego, red vehicles inside OSZ.
 PALETTE = {
     # BEV base layers
-    'bg':              '#f8f8f7',   # figure background (off-white)
-    'panel_bg':        '#ffffff',   # BEV panel background
-    'offroad':         '#f0f0ea',   # non-drivable ground (very light beige)
-    'road':            '#e6e6e6',   # drivable area / road surface
-    'obstacle':        '#7f7f7f',   # voxel-cast obstacles (walls, vehicles)
-    'osz':             '#1a1a1a',   # PA-relevant OSZ (black shadow)
-    'lane':            '#5a5a5a',   # HD-map lane lines
+    'bg':              '#ffffff',   # figure background (white)
+    'panel_bg':        '#ffffff',   # BEV panel background (white)
+    'offroad':         '#f5f5f5',   # non-drivable ground (sidewalk, light grey)
+    'grass':           '#a5d6a7',   # vegetation / grass (soft green)
+    'road':            '#4a4a4a',   # drivable area / road (dark grey)
+    'obstacle':        '#ff9800',   # voxel-cast occluders (orange)
+    'obstacle_edge':   '#e65100',   # darker orange edge for occluders
+    'osz':             '#000000',   # PA-relevant OSZ (black shadow)
+    'lane':            '#ffffff',   # HD-map lane lines (white on dark road)
 
     # Vehicles / agents
-    'ego':             '#2563eb',   # blue ego marker
-    'other_vehicle':   '#f97316',   # orange other vehicles
-    'other_vehicle_edge': '#b45309',
+    'ego':             '#1976d2',   # blue ego marker
+    'other_vehicle':   '#ff9800',   # orange for vehicles visible in the open
+    'other_vehicle_edge': '#e65100',
+    'vehicle_in_osz':  '#d32f2f',   # red for vehicles that sit inside OSZ
     'pedestrian':      '#333333',   # dark grey pedestrian dot
     'tracked_arrow':   '#111111',   # heading arrow for tracked vehicle
 
@@ -134,7 +146,7 @@ PALETTE = {
     'text_dark':       '#222222',
     'text_mid':        '#555555',
     'text_light':      '#888888',
-    'spine':           '#cccccc',
+    'spine':           '#dddddd',
     'error':           '#dc2626',
 
     # Info panel (light theme)
@@ -149,6 +161,27 @@ def _hex_to_rgb(h: str):
     """Convert '#rrggbb' to (r,g,b) in [0,1]."""
     h = h.lstrip('#')
     return tuple(int(h[i:i+2], 16) / 255.0 for i in (0, 2, 4))
+
+
+def _smooth_osz_mask(osz_mask: np.ndarray, iterations: int = 1) -> np.ndarray:
+    """Close small holes in the OSZ shadow mask for cleaner rendering.
+
+    The 2D ray caster can leave single-cell gaps between adjacent shadow
+    rays, which show up as zebra-like discontinuities in the figure. A
+    minimal binary dilation (1 pixel) fills these gaps without materially
+    expanding the OSZ boundary. If scipy is unavailable, returns the
+    original mask unchanged.
+
+    Args:
+        osz_mask:  (nx, ny) bool PA-relevant OSZ mask.
+        iterations: number of dilation iterations; 1 is usually enough.
+
+    Returns:
+        (nx, ny) bool smoothed OSZ mask.
+    """
+    if not _SCIPY_AVAILABLE or osz_mask is None or osz_mask.size == 0:
+        return osz_mask
+    return binary_dilation(osz_mask, iterations=iterations)
 
 
 
@@ -183,14 +216,17 @@ def visualize_event(nusc: NuScenes, event: Dict, ax: plt.Axes,
     # make correct mining decisions look wrong (raw OSZ is usually much
     # larger, including building shadows the miner never counted).
     overlay = np.zeros((*bev_occ.shape, 3), dtype=np.float32)
-    # Light base: white background
+    # White background
     overlay[:] = _hex_to_rgb(PALETTE['panel_bg'])
-    # Road surface (drivable area)
+    # Non-drivable ground (sidewalk / grass) — light grey / green
+    non_drivable = ~(drivable_mask | bev_occ)
+    overlay[non_drivable] = _hex_to_rgb(PALETTE['grass'])
+    # Road surface (drivable area) — dark grey
     overlay[drivable_mask] = _hex_to_rgb(PALETTE['road'])
-    # Solid obstacles / voxel-cast surfaces
+    # Solid obstacles / voxel-cast surfaces — orange (the thing casting shadow)
     overlay[bev_occ] = _hex_to_rgb(PALETTE['obstacle'])
-    # PA-relevant OSZ (black shadow on drivable area)
-    overlay[osz_pa] = _hex_to_rgb(PALETTE['osz'])
+    # PA-relevant OSZ (black shadow). Smooth tiny holes for clean rendering.
+    overlay[_smooth_osz_mask(osz_pa)] = _hex_to_rgb(PALETTE['osz'])
     ax.imshow(overlay, origin='lower', extent=extent)
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
@@ -257,7 +293,8 @@ def visualize_event(nusc: NuScenes, event: Dict, ax: plt.Axes,
         s.set_color(PALETTE['spine'])
 
     legend_patches = [
-        mpatches.Patch(color=_hex_to_rgb(PALETTE['obstacle']), label='Occupied'),
+        mpatches.Patch(color=_hex_to_rgb(PALETTE['road']), label='Drivable area (road)'),
+        mpatches.Patch(color=_hex_to_rgb(PALETTE['obstacle']), label='Occluder (wall / vehicle)'),
         mpatches.Patch(color=_hex_to_rgb(PALETTE['osz']), label='PA-relevant OSZ'),
         plt.Line2D([0],[0], marker='*', color=PALETTE['tracked_arrow'], markersize=8,
                    linestyle='none', label='Emerged (t)'),
@@ -441,9 +478,14 @@ def _get_scene_annotations_ego(nusc: NuScenes, sample_token: str) -> List[Dict]:
 
 
 def _draw_annotation_boxes(ax, anns: List[Dict],
+                           osz_mask: np.ndarray,
                            tracked_instance: str = None,
                            tracked_verdict=None) -> None:
-    """Draw all annotation BEV boxes on ax (axes uses ego-y, ego-x)."""
+    """Draw all annotation BEV boxes on ax (axes uses ego-y, ego-x).
+
+    Vehicles whose centre lies inside the OSZ are drawn in red; vehicles
+    in the open are drawn in orange. Pedestrians are dark-grey dots.
+    """
     for a in anns:
         if not osz_source.in_bev_range(a['x'], a['y']):
             continue
@@ -477,9 +519,14 @@ def _draw_annotation_boxes(ax, anns: List[Dict],
                         arrowprops=dict(arrowstyle='->', color=PALETTE['tracked_arrow'],
                                         lw=1.5), zorder=6)
         elif cat.startswith('vehicle'):
+            # Vehicle in OSZ → red; vehicle in the open → orange
+            inside_osz = (osz_source.in_bev_range(a['x'], a['y']) and
+                          osz_source.is_in_osz(a['x'], a['y'], osz_mask))
+            facecolor = PALETTE['vehicle_in_osz'] if inside_osz else PALETTE['other_vehicle']
+            edgecolor = PALETTE['vehicle_in_osz'] if inside_osz else PALETTE['other_vehicle_edge']
             poly = mpatches.Polygon(plot_pts, closed=True,
-                                    facecolor=PALETTE['other_vehicle'], edgecolor=PALETTE['other_vehicle_edge'],
-                                    alpha=0.25, linewidth=0.6, zorder=3)
+                                    facecolor=facecolor, edgecolor=edgecolor,
+                                    alpha=0.28, linewidth=0.6, zorder=3)
             ax.add_patch(poly)
         else:
             # Barriers, cones, construction objects, etc.
@@ -580,9 +627,13 @@ def _draw_frame_own_ego(ax, nusc, sample_token, instance_token,
 
     overlay = np.zeros((*bev_occ.shape, 3), dtype=np.float32)
     overlay[:] = _hex_to_rgb(PALETTE['panel_bg'])  # white base
-    overlay[drivable_mask] = _hex_to_rgb(PALETTE['road'])  # light grey road
-    overlay[bev_occ] = _hex_to_rgb(PALETTE['obstacle'])  # grey obstacles
-    overlay[osz_pa] = _hex_to_rgb(PALETTE['osz'])  # black OSZ shadow
+    # Non-drivable ground (sidewalk / grass)
+    non_drivable = ~(drivable_mask | bev_occ)
+    overlay[non_drivable] = _hex_to_rgb(PALETTE['grass'])
+    overlay[drivable_mask] = _hex_to_rgb(PALETTE['road'])  # dark grey road
+    overlay[bev_occ] = _hex_to_rgb(PALETTE['obstacle'])  # orange occluders
+    # Black OSZ shadow — smooth tiny holes for clean rendering
+    overlay[_smooth_osz_mask(osz_pa)] = _hex_to_rgb(PALETTE['osz'])
     ax.imshow(overlay, origin='lower', extent=extent)
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
@@ -603,7 +654,7 @@ def _draw_frame_own_ego(ax, nusc, sample_token, instance_token,
     # All scene annotations (vehicles=orange boxes, peds=dark dots,
     # tracked vehicle=verdict-coloured box + heading arrow).
     _anns = _get_scene_annotations_ego(nusc, sample_token)
-    _draw_annotation_boxes(ax, _anns, tracked_instance=instance_token,
+    _draw_annotation_boxes(ax, _anns, osz_pa, tracked_instance=instance_token,
                            tracked_verdict=verdict)
 
     coverage_pct = float(osz_pa.mean()) * 100.0
@@ -1004,9 +1055,13 @@ def _draw_frame_own_ego_emerged(ax, nusc, sample_token,
 
     overlay = np.zeros((*bev_occ.shape, 3), dtype=np.float32)
     overlay[:] = _hex_to_rgb(PALETTE['panel_bg'])
+    # Non-drivable ground (sidewalk / grass)
+    non_drivable = ~(drivable_mask | bev_occ)
+    overlay[non_drivable] = _hex_to_rgb(PALETTE['grass'])
     overlay[drivable_mask] = _hex_to_rgb(PALETTE['road'])
     overlay[bev_occ] = _hex_to_rgb(PALETTE['obstacle'])
-    overlay[osz_pa] = _hex_to_rgb(PALETTE['osz'])
+    # Black OSZ shadow — smooth tiny holes for clean rendering
+    overlay[_smooth_osz_mask(osz_pa)] = _hex_to_rgb(PALETTE['osz'])
     ax.imshow(overlay, origin='lower', extent=extent)
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
@@ -1022,7 +1077,7 @@ def _draw_frame_own_ego_emerged(ax, nusc, sample_token,
                 arrowprops=dict(arrowstyle='->', color=PALETTE['text_dark'], lw=1.0))
 
     _anns = _get_scene_annotations_ego(nusc, sample_token)
-    _draw_annotation_boxes(ax, _anns, tracked_instance=instance_token,
+    _draw_annotation_boxes(ax, _anns, osz_pa, tracked_instance=instance_token,
                            tracked_verdict='emerged')
 
     coverage_pct = float(osz_pa.mean()) * 100.0
@@ -1106,20 +1161,22 @@ def _draw_info_panel(ax, nusc, event, idx, total, label_filter,
     add('─' * 40, PALETTE['info_separator'])
     add('legend:', PALETTE['text_dark'], 'bold')
     add('  ■ black   = PA-relevant OSZ (shadow)', '#1a1a1a')
-    add('  ■ gray    = obstacles (walls, vehicles)', PALETTE['obstacle'])
-    add('  ■ lgrey   = drivable area (road)', PALETTE['road'])
-    add('  ■ orange  = other vehicles', PALETTE['other_vehicle'])
+    add('  ■ orange  = occluders (walls, parked vehicles)', PALETTE['obstacle'])
+    add('  ■ d.grey  = drivable area (road)', PALETTE['road'])
+    add('  ■ green   = non-drivable ground (grass / sidewalk)', PALETTE['grass'])
+    add('  ■ orange  = other vehicles in the open', PALETTE['other_vehicle'])
+    add('  ■ red     = other vehicles inside OSZ', PALETTE['vehicle_in_osz'])
     add('  ■ dk dot  = pedestrians', PALETTE['pedestrian'])
-    add('  ■ grey ln = lane boundaries', PALETTE['lane'])
+    add('  ■ white ln= lane boundaries', PALETTE['lane'])
     add('  ★ colored = tracked ghost vehicle + heading', VERDICT_STYLE['emerged'][0])
     add('─' * 40, PALETTE['info_separator'])
     add('read the grid:', PALETTE['text_dark'], 'bold')
     add('  • car stayed in OSZ?  red dots across t-4..t-1', PALETTE['text_light'])
     add('  • when did it come out?  red→green transition', PALETTE['text_light'])
-    add('  • OSZ moving?  compare red shape across frames', PALETTE['text_light'])
+    add('  • OSZ moving?  compare black shape across frames', PALETTE['text_light'])
     add('  • ego turning?  OSZ shape rotates between frames', PALETTE['text_light'])
     add('  • other cars explain OSZ?  see orange boxes', PALETTE['text_light'])
-    add('  • road makes sense?  grey surface + lane lines', PALETTE['text_light'])
+    add('  • road makes sense?  dark-grey surface + white lane lines', PALETTE['text_light'])
     add('─' * 40, PALETTE['info_separator'])
     add('keys:  n=next   p=prev   r=redraw   q=quit', PALETTE['info_key'], 'bold')
 
