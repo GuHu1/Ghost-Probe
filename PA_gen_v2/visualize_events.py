@@ -127,7 +127,7 @@ PALETTE = {
     'bg':              '#ffffff',   # figure background (white)
     'panel_bg':        '#ffffff',   # BEV panel background (white)
     'offroad':         '#f5f5f5',   # non-drivable ground (sidewalk, light grey)
-    'grass':           '#a5d6a7',   # vegetation / grass (soft green)
+    'grass':           '#4caf50',   # vegetation / grass (darker green)
     'road':            '#4a4a4a',   # drivable area / road (dark grey)
     'obstacle':        '#ff9800',   # voxel-cast occluders (orange)
     'obstacle_edge':   '#e65100',   # darker orange edge for occluders
@@ -139,8 +139,9 @@ PALETTE = {
     'other_vehicle':   '#ff9800',   # orange for vehicles visible in the open
     'other_vehicle_edge': '#e65100',
     'vehicle_in_osz':  '#d32f2f',   # red for vehicles that sit inside OSZ
-    'pedestrian':      '#333333',   # dark grey pedestrian dot
+    'pedestrian':      '#7b1fa2',   # purple pedestrian dot
     'tracked_arrow':   '#111111',   # heading arrow for tracked vehicle
+    'emerged_star':    '#ffffff',   # bright star on top of emerged vehicle
 
     # Text / UI
     'text_dark':       '#222222',
@@ -261,8 +262,8 @@ def visualize_event(nusc: NuScenes, event: Dict, ax: plt.Axes,
 
     # Emerged vehicle position (frame t), already stored in metric ego xy
     ex, ey = event['emerge_bev_xy']
-    ax.plot(ey, ex, '*', color=VERDICT_STYLE['emerged'][0], markersize=14,
-            path_effects=[pe.withStroke(linewidth=2, foreground='white')],
+    ax.plot(ey, ex, '*', color=PALETTE['emerged_star'], markersize=14,
+            path_effects=[pe.withStroke(linewidth=2, foreground='black')],
             label='Emerged (t)')
     # NOTE: plotted as (ey, ex) not (ex, ey) — matplotlib's x-axis here is
     # ego-y (horizontal) and y-axis is ego-x (forward), matching the
@@ -319,7 +320,7 @@ def visualize_event(nusc: NuScenes, event: Dict, ax: plt.Axes,
         mpatches.Patch(color=_hex_to_rgb(PALETTE['road']), label='Drivable area (road)'),
         mpatches.Patch(color=_hex_to_rgb(PALETTE['obstacle']), label='Occluder (wall / vehicle)'),
         mpatches.Patch(color=_hex_to_rgb(PALETTE['osz']), label='PA-relevant OSZ'),
-        plt.Line2D([0],[0], marker='*', color=VERDICT_STYLE['emerged'][0], markersize=8,
+        plt.Line2D([0],[0], marker='*', color=PALETTE['emerged_star'], markersize=8,
                    linestyle='none', label='Emerged (t)'),
         plt.Line2D([0],[0], marker='o', color=VERDICT_STYLE[True][0], markersize=5,
                    linestyle='none', label='Lookback (confirmed in OSZ)'),
@@ -1109,8 +1110,8 @@ def _draw_frame_own_ego_emerged(ax, nusc, sample_token,
 
     x_ego, y_ego = emerge_xy
     if osz_source.in_bev_range(x_ego, y_ego):
-        ax.plot(y_ego, x_ego, '*', color=VERDICT_STYLE['emerged'][0], markersize=15,
-                path_effects=[pe.withStroke(linewidth=1.5, foreground='white')])
+        ax.plot(y_ego, x_ego, '*', color=PALETTE['emerged_star'], markersize=15,
+                path_effects=[pe.withStroke(linewidth=1.5, foreground='black')])
         ax.text(y_ego + 0.8, x_ego + 0.8, frame_label,
                 color=PALETTE['text_dark'], fontsize=6,
                 path_effects=[pe.withStroke(linewidth=1, foreground='white')])
@@ -1193,7 +1194,8 @@ def _draw_info_panel(ax, nusc, event, idx, total, label_filter,
     add('  ■ red     = other vehicles inside OSZ', PALETTE['vehicle_in_osz'])
     add('  ■ dk dot  = pedestrians', PALETTE['pedestrian'])
     add('  ■ white ln= lane boundaries', PALETTE['lane'])
-    add('  ★ colored = tracked ghost vehicle + heading', VERDICT_STYLE['emerged'][0])
+    add('  ★ white   = emerged vehicle (red box) position', PALETTE['emerged_star'])
+    add('  ■ red box = tracked vehicle in OSZ during lookback', PALETTE['vehicle_in_osz'])
     add('─' * 40, PALETTE['info_separator'])
     add('read the grid:', PALETTE['text_dark'], 'bold')
     add('  • car stayed in OSZ?  red dots across t-4..t-1', PALETTE['text_light'])
