@@ -241,12 +241,9 @@ def _ensure_gui_backend() -> str:
         return matplotlib.get_backend()
 
     candidates = []
-    # ── WebAgg: serves interactive plots in browser (ideal for remote servers)
-    try:
-        import tornado  # noqa: F401  (webagg dependency)
-        candidates.append('WebAgg')
-    except Exception:
-        pass
+    # ── Native windows FIRST — these open a real OS window locally.
+    # TkAgg is preferred: tkinter ships with CPython on Windows/macOS and
+    # needs no extra install.
     try:
         import tkinter  # noqa: F401  (probe only)
         candidates.append('TkAgg')
@@ -259,6 +256,14 @@ def _ensure_gui_backend() -> str:
             candidates.append(be)
         except Exception:
             pass
+    # ── WebAgg LAST — serves interactive plots over HTTP (open in browser).
+    # Only useful when no native window is possible (e.g. headless remote
+    # without display). Picked last so local users get a real window.
+    try:
+        import tornado  # noqa: F401  (webagg dependency)
+        candidates.append('WebAgg')
+    except Exception:
+        pass
 
     for be in candidates:
         try:
@@ -541,9 +546,20 @@ class EventBrowser:
 
     # ── entry ─────────────────────────────────────────────────────────
     def launch(self) -> None:
-        _ensure_gui_backend()
+        be = _ensure_gui_backend()
         # Use the top-level `plt` (already imported at module load). After
         # use(force=True) it targets the new GUI backend on first figure.
+
+        if be.lower().startswith('webagg'):
+            print('\n  ⓘ WebAgg backend: an interactive window is served '
+                  'over HTTP.')
+            print('    Open this in your browser:  http://localhost:8988/')
+            print('    (terminal stays busy while the server runs; '
+                  'Ctrl-C to stop)\n')
+        else:
+            print('\n  ⓘ GUI backend active. A window should now be open.')
+            print('    Click it, then use:  n=next  p=prev  r=redraw  '
+                  'q=quit\n')
 
         self.fig, self.axes = plt.subplots(2, 3, figsize=(18, 11))
         self.fig.canvas.manager.set_window_title('Ghost-Probe Event Browser')
@@ -581,13 +597,14 @@ class HeadlessEventBrowser:
             self.events = list(events)
         self.idx = max(0, min(start_idx, len(self.events) - 1))
         self.label_filter = label_filter
-        # Output path for the current-frame PNG.
-        self.out_path = str(_REPO_ROOT / 'PA_gen_v2' / 'output' /
-                            '_browser_current.png')
+        # Per-event PNGs in a dedicated folder (so you can flip through them
+        # in any image viewer instead of watching a single overwritten file).
+        self.out_dir = str(_REPO_ROOT / 'PA_gen_v2' / 'output' / 'browser')
+        self.out_path = None  # set per render
 
     # ── render (same logic as EventBrowser, but saves to file) ────────
     def _render(self) -> None:
-        """Render current event to self.out_path (overwrites each time)."""
+        """Render current event to a per-event PNG in self.out_dir."""
         matplotlib.use('Agg')
         import matplotlib.pyplot as _hp  # headless pyplot
 
@@ -635,7 +652,9 @@ class HeadlessEventBrowser:
         fig.suptitle(f'Ghost-Probe Event Browser  [{self.idx+1} / '
                      f'{len(self.events)}]   (headless mode)',
                      fontsize=11, color='#e8e8e8', fontweight='bold')
-        Path(self.out_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(self.out_dir).mkdir(parents=True, exist_ok=True)
+        self.out_path = str(Path(self.out_dir) /
+                            f'event_{self.idx:04d}.png')
         fig.savefig(self.out_path, dpi=130, bbox_inches='tight')
         _hp.close(fig)
 
@@ -651,6 +670,7 @@ class HeadlessEventBrowser:
         d = (ex*ex + ey*ey) ** 0.5
         print(f' │ emerge_dist={d:.1f}m  osz_frames={ev["n_osz_frames"]}')
         print(f' │ saved → {self.out_path}')
+        print(f' │ (folder: {self.out_dir})')
         print(f' └─')
 
     # ── entry ─────────────────────────────────────────────────────────
@@ -667,9 +687,10 @@ class HeadlessEventBrowser:
         print('║  r         redraw current                         ║')
         print('║  q         quit                                   ║')
         print('╚══════════════════════════════════════════════════╝')
-        print('\n  (open the PNG in another terminal/image viewer)')
-        print("  Tip: use 'tail -f' on a log or a viewer that")
-        print("  auto-reloads to see updates without reopening.\n")
+        print('\n  Each event is saved as a separate PNG:')
+        print(f'    {self.out_dir}/event_0000.png, event_0001.png, ...')
+        print('  Open the folder in any image viewer to flip through')
+        print('  (most viewers let you scroll with ←/→ once focused).\n')
 
         self._render()
         self._print_status()
@@ -856,8 +877,19 @@ def _draw_info_panel(ax, nusc, event, idx, total, label_filter,
 
 
 def launch_browser(nusc: NuScenes, events: List[Dict],
-                   start_idx: int = 0, label_filter: int = 1) -> None:
-    """Launch interactive EventBrowser; falls back to headless if no GUI."""
+                   start_idx: int = 0, label_filter: int = 1,
+                   force_headless: bool = False) -> None:
+    """Launch interactive EventBrowser; falls back to headless if no GUI.
+
+    force_headless=True skips GUI detection entirely and uses the
+    terminal + PNG mode (handy on headless servers or when no display
+    is available). Auto-fallback still triggers if GUI launch fails.
+    """
+    if force_headless:
+        hb = HeadlessEventBrowser(nusc, events, start_idx=start_idx,
+                                  label_filter=label_filter)
+        hb.launch()
+        return
     try:
         browser = EventBrowser(nusc, events, start_idx=start_idx,
                                label_filter=label_filter)
@@ -958,6 +990,10 @@ if __name__ == '__main__':
     parser.add_argument('--browse', action='store_true',
                         help='Launch the interactive EventBrowser instead of '
                              'exporting PNGs.')
+    parser.add_argument('--headless', action='store_true',
+                        help='With --browse: force terminal + PNG mode '
+                             '(no GUI window). Useful if no display is '
+                             'available or WebAgg is awkward.')
     parser.add_argument('--label_filter', type=int, default=1,
                         help='Browser subset: 1=positives (default), '
                              '0=negatives, -1=all.')
@@ -978,10 +1014,14 @@ if __name__ == '__main__':
         print(f"\nLaunching EventBrowser "
               f"(label_filter={args.label_filter}, "
               f"{len([e for e in events if args.label_filter < 0 or e['label'] == args.label_filter])} events)...")
-        print("GUI mode:   n=next  p=prev  r=redraw  q=quit   (click figure)")
-        print("Headless:   same keys + j/k/+/-/number    (terminal input)")
+        if args.headless:
+            print("Mode: HEADLESS (terminal + PNG, no GUI window)")
+        else:
+            print("GUI mode:   n=next  p=prev  r=redraw  q=quit   (click window)")
+            print("Headless:   --headless  for terminal + PNG mode")
         launch_browser(nusc, events, start_idx=args.start_idx,
-                       label_filter=args.label_filter)
+                       label_filter=args.label_filter,
+                       force_headless=args.headless)
     else:
         print("Rendering positive events ...")
         make_event_grid(nusc, events, max_events=args.max_events,
