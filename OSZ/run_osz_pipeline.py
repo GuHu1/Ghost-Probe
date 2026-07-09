@@ -43,8 +43,7 @@ except ImportError:
     _DRIVABLE_FILTER_AVAILABLE = False
 
 from utils.nuscenes_loader   import NuScenesOSZLoader
-from visualize.bev_viz       import (plot_camera_osz_comparison, plot_pa_osz,
-                                     plot_camera_osz_comparison, plot_pa_osz,
+from visualize.bev_viz       import (plot_camera_osz_comparison,
                                      plot_gt_osz, plot_osz_explained)
 from common.bev_config import (
     BEV_RANGE_XYXY   as DEFAULT_BEV_RANGE,
@@ -239,24 +238,12 @@ def main():
             refined_mask = None,
             depth_bev    = depth_bev,
             bev_occ      = bev_occ,
+            osz_pa       = osz_pa,
             bev_range    = tuple(args.bev_range),
             sample_token = token,
             save_path    = str(outdir / f"frame_{frame_idx:04d}_comparison.png"),
         )
         plt.close(fig3)
-
-        # PA-relevant OSZ visualization: the signal PA actually trains on
-        if drivable_mask is not None:
-            fig4 = plot_pa_osz(
-                osz_raw      = osz_raw,
-                osz_pa       = osz_pa,
-                drivable_mask= drivable_mask,
-                bev_occ      = bev_occ,
-                bev_range    = tuple(args.bev_range),
-                sample_token = token,
-                save_path    = str(outdir / f"frame_{frame_idx:04d}_pa_osz.png"),
-            )
-            plt.close(fig4)
 
         # GT bounding box overlay — shows which annotations are phantom candidates
         if drivable_mask is not None and not loader._use_mock and hasattr(loader, 'nusc'):

@@ -111,7 +111,7 @@ def cast_osz_2d(bev_occ: np.ndarray,
     x_min, x_max, y_min, y_max = caster.bev_range
 
     ego_xi = int(np.floor((0.0 - x_min) / caster.bev_res))
-    ego_yi = int(np.floor((0.0 - y_min) / caster.bev_res))
+    ego_yi = int(np.floor((y_max - 0.0) / caster.bev_res))
 
     osz_mask = np.zeros((nx, ny), dtype=bool)
     if not (0 <= ego_xi < nx and 0 <= ego_yi < ny):
@@ -228,8 +228,10 @@ class RayCaster3D:
         self.nz = int((z_max - z_min) / z_res)
 
         # Voxel centre coordinates in world frame [nx, ny, nz, 3]
+        # y decreases with column index so that imshow(..., origin='lower',
+        # extent=[y_max, y_min, x_min, x_max]) places ego-left (+y) on the LEFT.
         xs = np.linspace(bev_range[0] + bev_res / 2, bev_range[1] - bev_res / 2, self.nx)
-        ys = np.linspace(bev_range[2] + bev_res / 2, bev_range[3] - bev_res / 2, self.ny)
+        ys = np.linspace(bev_range[3] - bev_res / 2, bev_range[2] + bev_res / 2, self.ny)
         zs = np.linspace(z_min + z_res / 2, z_max - z_res / 2, self.nz)
 
         # shape: (nx*ny*nz, 3)
@@ -356,9 +358,10 @@ def build_bev_occ_from_pointcloud(
     nx, ny, nz = caster.nx, caster.ny, caster.nz
     x_min, x_max, y_min, y_max = caster.bev_range
 
-    # Voxelize: floor each point into a 3D grid cell
+    # Voxelize: floor each point into a 3D grid cell. y-index is reversed
+    # so column 0 corresponds to y_max (ego-left), matching imshow/display.
     xi = np.floor((pts_ego[:, 0] - x_min) / caster.bev_res).astype(np.int32)
-    yi = np.floor((pts_ego[:, 1] - y_min) / caster.bev_res).astype(np.int32)
+    yi = np.floor((y_max - pts_ego[:, 1]) / caster.bev_res).astype(np.int32)
     zi = np.floor((pts_ego[:, 2] - caster.z_min) / caster.z_res).astype(np.int32)
 
     in_grid = ((xi >= 0) & (xi < nx) &

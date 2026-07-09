@@ -130,11 +130,12 @@ def _rasterize_polygons_pil(
             def to_pix(coords):
                 """
                 Convert metric (x,y) ego coords to PIL pixel (col, row).
-                col = (x - x_min) * scale_x  [maps ego-x to image column]
-                row = (y - y_min) * scale_y  [maps ego-y to image row]
+                col = (x - x_min) * scale_x       [maps ego-x to image column]
+                row = (y_max - y) * scale_y       [maps ego-y to image row,
+                                                   reversed so j=0 is y_max]
                 """
                 return [
-                    ((x - x_min) * scale_x, (y - y_min) * scale_y)
+                    ((x - x_min) * scale_x, (y_max - y) * scale_y)
                     for x, y in coords
                 ]
 

@@ -91,9 +91,12 @@ def bev_coords_to_pixel(x_ego: float, y_ego: float) -> Tuple[int, int]:
     """Convert metric (x, y) in ego frame to BEV pixel (col, row).
 
     Ego vehicle is always at (BEV_CENTER, BEV_CENTER) in pixel space.
+    col indexes ego-x (axis 0), row indexes ego-y (axis 1). The row index
+    is reversed so that imshow(..., origin='lower',
+    extent=[y_max, y_min, x_min, x_max]) places ego-left (+y) on the LEFT.
     """
     col = int((x_ego + BEV_RANGE_M) / BEV_RESOLUTION_M)
-    row = int((y_ego + BEV_RANGE_M) / BEV_RESOLUTION_M)
+    row = int((BEV_RANGE_M - y_ego) / BEV_RESOLUTION_M)
     return col, row
 
 
@@ -103,7 +106,7 @@ def pixel_to_bev_coords(col: int, row: int) -> Tuple[float, float]:
     Returns the centre coordinates of the BEV cell in ego frame.
     """
     x = col * BEV_RESOLUTION_M - BEV_RANGE_M
-    y = row * BEV_RESOLUTION_M - BEV_RANGE_M
+    y = BEV_RANGE_M - row * BEV_RESOLUTION_M
     return x, y
 
 

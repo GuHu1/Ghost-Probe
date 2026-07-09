@@ -312,13 +312,14 @@ def plot_camera_osz_comparison(
     refined_mask: Optional[np.ndarray],
     depth_bev: np.ndarray,
     bev_occ: Optional[np.ndarray] = None,
+    osz_pa: Optional[np.ndarray] = None,
     bev_range: tuple = (-50, 50, -50, 50),
     sample_token: str = "",
     save_path: Optional[str] = None,
 ) -> plt.Figure:
     """
     One row per camera: image → dense depth → camera-view BEV shadow mask.
-    Final row shows fused results: OSZ Raw → OSZ Refined → BEV Depth.
+    Final row shows fused results: OSZ Raw → PA-relevant OSZ → BEV Depth.
     The main title includes the frame token for easy identification.
     """
     cam_names = list(images.keys())
@@ -382,16 +383,16 @@ def plot_camera_osz_comparison(
     _draw_ego(ax_osz)
 
     ax_ref = axes[-1][1]
-    if bev_occ is not None:
-        ax_ref.imshow(bev_occ, origin='lower', extent=extent,
-                      cmap='Greys', vmin=0, vmax=1, interpolation='nearest', alpha=0.4)
-    if refined_mask is not None:
+    if osz_pa is not None:
+        ax_ref.imshow(osz_pa, origin='lower', extent=extent,
+                      cmap=shadow_cmap, vmin=0, vmax=1, interpolation='nearest')
+    elif refined_mask is not None:
         ax_ref.imshow(refined_mask, origin='lower', extent=extent,
                       cmap='Reds', vmin=0, vmax=1, interpolation='bilinear')
         _bev_contour(ax_ref, refined_mask, bev_range,
                      levels=[0.5], colors=['#FF8800'], linewidths=1.5)
     ax_ref.set_xlim(*xlim); ax_ref.set_ylim(*ylim)
-    ax_ref.set_title("PA-relevant OSZ\n(run with drivable filter)", fontsize=10)
+    ax_ref.set_title("PA-relevant OSZ", fontsize=10)
     ax_ref.set_xlabel('y (m)', fontsize=7)
     ax_ref.set_ylabel('x (m)', fontsize=7)
     _draw_ego(ax_ref)
@@ -410,99 +411,6 @@ def plot_camera_osz_comparison(
     plt.colorbar(im_db, ax=ax_dbev, fraction=0.046, pad=0.04)
 
     plt.tight_layout(rect=[0, 0, 1, 0.97])
-
-    if save_path:
-        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(save_path, dpi=120, bbox_inches='tight')
-        print(f"  [saved] {save_path}")
-
-    return fig
-
-
-def plot_pa_osz(
-    osz_raw:       np.ndarray,
-    osz_pa:        np.ndarray,
-    drivable_mask: np.ndarray,
-    bev_occ:       Optional[np.ndarray],
-    bev_range:     tuple = (-50, 50, -50, 50),
-    sample_token:  str = "",
-    save_path:     Optional[str] = None,
-) -> plt.Figure:
-    """
-    Three-panel comparison showing the effect of the drivable-area filter:
-      Panel 1: Drivable area (green) overlaid on raw OSZ (red)
-      Panel 2: PA-relevant OSZ = raw OSZ ∩ drivable area (orange)
-      Panel 3: Side-by-side cell counts as a bar chart
-    """
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5.5))
-    x_min, x_max, y_min, y_max = bev_range
-    extent, xlim, ylim = _bev_extent(bev_range)
-
-    shadow_cmap   = ListedColormap(['none', '#d32f2f'])   # PA red — raw OSZ
-    drivable_cmap = ListedColormap(['none', '#4caf50'])   # grass green — drivable
-    pa_cmap       = ListedColormap(['none', '#d32f2f'])   # PA red — relevant OSZ
-
-    # ── Panel 1: raw OSZ + drivable overlay ──────────────────────────────
-    ax = axes[0]
-    if bev_occ is not None:
-        ax.imshow(bev_occ, origin='lower', extent=extent,
-                  cmap='Greys', vmin=0, vmax=1, interpolation='nearest', alpha=0.35)
-    ax.imshow(osz_raw, origin='lower', extent=extent,
-              cmap=shadow_cmap, vmin=0, vmax=1, interpolation='nearest', alpha=0.7)
-    ax.imshow(drivable_mask, origin='lower', extent=extent,
-              cmap=drivable_cmap, vmin=0, vmax=1, interpolation='nearest', alpha=0.45)
-    ax.set_xlim(*xlim); ax.set_ylim(*ylim)
-    ax.set_title("Raw OSZ (red) + Drivable area (green)", fontsize=10)
-    ax.set_xlabel('y (m)', fontsize=8); ax.set_ylabel('x (m)', fontsize=8)
-    ax.tick_params(labelsize=7)
-    _draw_ego(ax)
-    patches = [
-        mpatches.Patch(color='#d32f2f', label=f'Raw OSZ ({osz_raw.sum()} cells)'),
-        mpatches.Patch(color='#4caf50', alpha=0.7,
-                       label=f'Drivable ({drivable_mask.sum()} cells)'),
-    ]
-    ax.legend(handles=patches, fontsize=7, loc='upper right')
-
-    # ── Panel 2: PA-relevant OSZ ─────────────────────────────────────────
-    ax = axes[1]
-    if bev_occ is not None:
-        ax.imshow(bev_occ, origin='lower', extent=extent,
-                  cmap='Greys', vmin=0, vmax=1, interpolation='nearest', alpha=0.35)
-    ax.imshow(drivable_mask, origin='lower', extent=extent,
-              cmap=drivable_cmap, vmin=0, vmax=1, interpolation='nearest', alpha=0.25)
-    ax.imshow(osz_pa, origin='lower', extent=extent,
-              cmap=pa_cmap, vmin=0, vmax=1, interpolation='nearest', alpha=0.9)
-    ax.set_xlim(*xlim); ax.set_ylim(*ylim)
-    kept_pct = osz_pa.sum() / max(osz_raw.sum(), 1) * 100
-    ax.set_title(f"PA-relevant OSZ\n"
-                 f"{osz_pa.sum()} cells = {kept_pct:.0f}% of raw OSZ retained",
-                 fontsize=10)
-    ax.set_xlabel('y (m)', fontsize=8); ax.set_ylabel('x (m)', fontsize=8)
-    ax.tick_params(labelsize=7)
-    _draw_ego(ax)
-
-    # ── Panel 3: bar chart summary ────────────────────────────────────────
-    ax = axes[2]
-    total_cells = osz_raw.size
-    labels = ['Total BEV\ngrid', 'Raw OSZ\n(geometric)', 'Drivable\narea',
-              'PA-relevant\nOSZ']
-    values = [total_cells, osz_raw.sum(), drivable_mask.sum(), osz_pa.sum()]
-    colors = ['#95A5A6', '#d32f2f', '#4caf50', '#d32f2f']
-    bars = ax.bar(labels, values, color=colors, edgecolor='white', linewidth=0.8)
-    for bar, val in zip(bars, values):
-        pct = val / total_cells * 100
-        ax.text(bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + total_cells * 0.01,
-                f'{pct:.1f}%', ha='center', va='bottom', fontsize=8, fontweight='bold')
-    ax.set_ylabel('BEV cells', fontsize=9)
-    ax.set_title("Coverage breakdown", fontsize=10)
-    ax.tick_params(labelsize=8)
-    ax.set_ylim(0, total_cells * 1.15)
-    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x/1000)}k'))
-
-    fig.suptitle(f"PA-relevant OSZ filter — {sample_token[:16]}...",
-                 fontsize=12, fontweight='bold')
-    plt.tight_layout()
 
     if save_path:
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
@@ -600,30 +508,33 @@ def plot_gt_osz(
         'human.pedestrian.construction_worker',
     }
 
-    fig, ax = plt.subplots(1, 1, figsize=(9, 9))
+    fig, ax = plt.subplots(1, 1, figsize=(10, 10))
     x_min, x_max, y_min, y_max = bev_range
     extent, xlim, ylim = _bev_extent(bev_range)
+    nx, ny = osz_pa.shape
 
-    # ── background layers ─────────────────────────────────────────────────
-    drivable_cmap = ListedColormap(['none', '#4a4a4a'])    # dark road grey
-    _bev_imshow(ax, drivable_mask.astype(np.float32), bev_range,
-                cmap=drivable_cmap, vmin=0, vmax=1, alpha=0.6)
+    # ── background layers: same palette as PA_gen_v2 / plot_osz_explained ─
+    overlay = np.zeros((nx, ny, 3), dtype=np.float32)
+    if drivable_mask is not None and drivable_mask.any():
+        non_drivable = ~(drivable_mask | bev_occ)
+        overlay[non_drivable] = _OSZ_PALETTE['grass']
+        overlay[drivable_mask] = _OSZ_PALETTE['road']
+    else:
+        overlay[:] = _OSZ_PALETTE['grass']
+        overlay[~bev_occ] = _OSZ_PALETTE['road']
 
-    pa_cmap = ListedColormap(['none', '#d32f2f'])          # PA red
-    _bev_imshow(ax, osz_pa.astype(np.float32), bev_range,
-                cmap=pa_cmap, vmin=0, vmax=1, alpha=0.5)
+    # Orange obstacles first, then black OSZ shadow on top
+    overlay[bev_occ] = _OSZ_PALETTE['obstacle']
+    overlay[osz_pa] = _OSZ_PALETTE['osz']
 
-    if bev_occ is not None:
-        occ_cmap = ListedColormap(['none', '#ff9800'])      # orange occluder
-        _bev_imshow(ax, bev_occ.astype(np.float32), bev_range,
-                    cmap=occ_cmap, vmin=0, vmax=1, alpha=0.6)
+    ax.imshow(overlay, origin='lower', extent=extent)
 
     # ── GT boxes ─────────────────────────────────────────────────────────
     boxes = get_gt_boxes_ego(nusc, sample_token, bev_range)
 
     for box in boxes:
-        xi = int((box['cx'] - x_min) / bev_res)
-        yi = int((box['cy'] - y_min) / bev_res)
+        xi = int(np.rint((box['cx'] - x_min) / bev_res))
+        yi = int(np.rint((y_max - box['cy']) / bev_res))
         if 0 <= xi < osz_pa.shape[0] and 0 <= yi < osz_pa.shape[1]:
             box['in_osz'] = bool(osz_pa[xi, yi])
 
@@ -633,30 +544,43 @@ def plot_gt_osz(
     for box in boxes:
         corners = _box_corners_ego(
             box['cx'], box['cy'], box['length'], box['width'], box['yaw'])
-        # In BEV axes: horizontal = ego-y, vertical = ego-x
         poly_ax_x = list(corners[:, 1]) + [corners[0, 1]]   # ego-y → horizontal
         poly_ax_y = list(corners[:, 0]) + [corners[0, 0]]   # ego-x → vertical
 
         cat = box['category']
         if cat in VEHICLE_CATS:
-            base_color = '#d32f2f' if box['in_osz'] else '#ff9800'
-            lw = 2.0
+            if box['in_osz']:
+                # phantom vehicle: vivid red with black outline so it pops on black OSZ
+                base_color = '#ff0000'
+                edge_color = '#ffffff'
+                lw = 2.2
+            else:
+                base_color = '#ff9800'
+                edge_color = '#e65100'
+                lw = 2.0
         elif cat in PERSON_CATS:
-            base_color = '#d32f2f' if box['in_osz'] else '#7b1fa2'
-            lw = 1.5
+            if box['in_osz']:
+                base_color = '#ff0000'
+                edge_color = '#ffffff'
+                lw = 1.8
+            else:
+                base_color = '#7b1fa2'
+                edge_color = '#4a148c'
+                lw = 1.5
         else:
             base_color = '#AAAAAA'
+            edge_color = '#666666'
             lw = 1.0
 
-        ax.plot(poly_ax_x, poly_ax_y, color=base_color, linewidth=lw, alpha=0.9)
+        ax.plot(poly_ax_x, poly_ax_y, color=edge_color, linewidth=lw + 0.6)
+        ax.plot(poly_ax_x, poly_ax_y, color=base_color, linewidth=lw, alpha=0.95)
 
-        # Forward tick: from box centre → front face centre, in BEV axes
+        # Forward arrow
         cos_h, sin_h = np.cos(box['yaw']), np.sin(box['yaw'])
         front_len = box['length'] * 0.4
-        # ego centre: (cx, cy),  ego front: (cx+cos_h*front_len, cy+sin_h*front_len)
         ax.annotate('',
-            xy=(box['cy'] + sin_h * front_len,   # ax_x = ego-y
-                box['cx'] + cos_h * front_len),  # ax_y = ego-x
+            xy=(box['cy'] + sin_h * front_len,
+                box['cx'] + cos_h * front_len),
             xytext=(box['cy'], box['cx']),
             arrowprops=dict(arrowstyle='->', color=base_color,
                             lw=lw * 0.8, mutation_scale=8),
@@ -667,29 +591,33 @@ def plot_gt_osz(
 
     # ── grid ─────────────────────────────────────────────────────────────
     for d in range(-40, 50, 10):
-        ax.axhline(d, color='#333333', lw=0.4, alpha=0.5)
-        ax.axvline(d, color='#333333', lw=0.4, alpha=0.5)
-    ax.axhline(0, color='#555555', lw=0.8)
-    ax.axvline(0, color='#555555', lw=0.8)
+        ax.axhline(d, color='#dddddd', lw=0.4, alpha=0.8)
+        ax.axvline(d, color='#dddddd', lw=0.4, alpha=0.8)
+    ax.axhline(0, color='#999999', lw=0.8)
+    ax.axvline(0, color='#999999', lw=0.8)
 
     # ── legend ────────────────────────────────────────────────────────────
     legend_items = [
-        mpatches.Patch(facecolor='#4a4a4a', label='Drivable area'),
-        mpatches.Patch(facecolor='#d32f2f', alpha=0.7,
+        mpatches.Patch(facecolor=_OSZ_PALETTE['road'], label='Road'),
+        mpatches.Patch(facecolor=_OSZ_PALETTE['grass'], label='Non-drivable ground'),
+        mpatches.Patch(facecolor=_OSZ_PALETTE['obstacle'], label='Occluder'),
+        mpatches.Patch(facecolor=_OSZ_PALETTE['osz'],
                        label=f'PA-relevant OSZ ({osz_pa.sum()} cells)'),
-        mpatches.Patch(facecolor='#ff9800', label='Occluder surface'),
         plt.Line2D([0],[0], color='#ff9800', lw=2, label='Vehicle (visible)'),
         plt.Line2D([0],[0], color='#7b1fa2', lw=2, label='Person (visible)'),
-        plt.Line2D([0],[0], color='#d32f2f', lw=2,
+        plt.Line2D([0],[0], color='#ff0000', lw=2,
                    label=f'Vehicle/Person in OSZ ({n_phantom}) — phantom candidate'),
         mpatches.Patch(facecolor='#AAAAAA', label='Other object'),
     ]
-    ax.legend(handles=legend_items, fontsize=7, loc='upper right', framealpha=0.85)
+    ax.legend(handles=legend_items, fontsize=7, loc='upper right', framealpha=0.9)
 
-    ax.set_xlim(*xlim)   # left=y_max=ego-left, right=y_min=ego-right
-    ax.set_ylim(*ylim)   # bottom=x_min, top=x_max (forward=UP)
-    ax.set_xlabel('y (m)  ← ego-left | ego-right →', fontsize=9)
-    ax.set_ylabel('x (m)  ↑ forward', fontsize=9)
+    ax.set_xlim(*xlim)
+    ax.set_ylim(*ylim)
+    ax.set_xlabel('y (m)  ← ego-left | ego-right →', fontsize=9,
+                  color=_OSZ_PALETTE['text'])
+    ax.set_ylabel('x (m)  ↑ forward', fontsize=9,
+                  color=_OSZ_PALETTE['text'])
+    ax.tick_params(labelsize=8, colors=_OSZ_PALETTE['text'])
     ax.set_title(
         f'BEV GT + PA-relevant OSZ  |  {sample_token[:16]}...\n'
         f'{len(boxes)} annotations  |  {n_phantom} phantom candidates',

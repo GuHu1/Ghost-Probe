@@ -191,16 +191,21 @@ def get_osz_for_sample(nusc: NuScenes,
 
 
 def bev_coords_to_pixel(x_ego: float, y_ego: float) -> Tuple[int, int]:
-    """Convert metric (x, y) in ego frame to BEV pixel (col, row)."""
+    """Convert metric (x, y) in ego frame to BEV pixel (col, row).
+
+    col indexes ego-x (axis 0), row indexes ego-y (axis 1). Row is reversed
+    so that imshow with extent=[y_max, y_min, x_min, x_max] and origin='lower'
+    places ego-left (+y) on the LEFT.
+    """
     col = int((x_ego + BEV_RANGE_M) / BEV_RESOLUTION)
-    row = int((y_ego + BEV_RANGE_M) / BEV_RESOLUTION)
+    row = int((BEV_RANGE_M - y_ego) / BEV_RESOLUTION)
     return col, row
 
 
 def pixel_to_bev_coords(col: int, row: int) -> Tuple[float, float]:
     """Inverse of bev_coords_to_pixel."""
     x = col * BEV_RESOLUTION - BEV_RANGE_M
-    y = row * BEV_RESOLUTION - BEV_RANGE_M
+    y = BEV_RANGE_M - row * BEV_RESOLUTION
     return x, y
 
 

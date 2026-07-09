@@ -184,7 +184,7 @@ import hashlib as _hashlib
 
 def _disk_cache_dir() -> Path:
     """Config-keyed cache dir; changes when BEV grid, Z-gate, or N_SWEEPS changes."""
-    cfg = f"{BEV_RANGE_XYXY}_{BEV_RESOLUTION_M}_{Z_MIN}_{Z_MAX}_{Z_RES}_{N_SWEEPS}"
+    cfg = f"{BEV_RANGE_XYXY}_{BEV_RESOLUTION_M}_{Z_MIN}_{Z_MAX}_{Z_RES}_{N_SWEEPS}_yflip_fixed"
     h = _hashlib.md5(cfg.encode()).hexdigest()[:8]
     return _REPO_ROOT / 'PA_gen_v2' / 'output' / 'osz_cache' / h
 
@@ -363,11 +363,16 @@ def bev_xy_to_ij(x_ego: float, y_ego: float) -> Tuple[int, int]:
     matching OSZ/'s (nx, ny) indexing='ij' EXACTLY:
         i = ego-x index (axis 0),  j = ego-y index (axis 1)
     Index arrays as mask[i, j]. Do NOT swap to mask[j, i].
+
+    The y-index is reversed relative to the naive (y - y_min) formula so that
+    the BEV array column order matches matplotlib imshow with
+    extent=[y_max, y_min, x_min, x_max] and origin='lower', where the LEFT
+    side of the plot is ego-left (positive y).
     """
     caster = get_caster()
     x_min, x_max, y_min, y_max = caster.bev_range
     i = int((x_ego - x_min) / caster.bev_res)
-    j = int((y_ego - y_min) / caster.bev_res)
+    j = int((y_max - y_ego) / caster.bev_res)
     return i, j
 
 
@@ -376,7 +381,7 @@ def ij_to_bev_xy(i: int, j: int) -> Tuple[float, float]:
     caster = get_caster()
     x_min, x_max, y_min, y_max = caster.bev_range
     x = x_min + (i + 0.5) * caster.bev_res
-    y = y_min + (j + 0.5) * caster.bev_res
+    y = y_max - (j + 0.5) * caster.bev_res
     return x, y
 
 
