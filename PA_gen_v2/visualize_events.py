@@ -249,8 +249,13 @@ def visualize_event(nusc: NuScenes, event: Dict, ax: plt.Axes,
     overlay[drivable_mask] = _hex_to_rgb(PALETTE['road'])
     # Solid obstacles / voxel-cast surfaces — orange (the thing casting shadow)
     overlay[bev_occ_solid] = _hex_to_rgb(PALETTE['obstacle'])
-    # PA-relevant OSZ (black shadow). Smooth tiny holes for clean rendering.
-    overlay[_smooth_osz_mask(osz_pa)] = _hex_to_rgb(PALETTE['osz'])
+    # PA-relevant OSZ (black shadow). Instead of pure black, darken the
+    # existing base color so the road/grass remain visually distinguishable
+    # underneath. 65% black + 35% base keeps the shadow dark but not opaque.
+    osz_smooth = _smooth_osz_mask(osz_pa)
+    black = _hex_to_rgb(PALETTE['osz'])
+    for c in range(3):
+        overlay[osz_smooth, c] = 0.65 * black[c] + 0.35 * overlay[osz_smooth, c]
     ax.imshow(overlay, origin='lower', extent=extent)
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
@@ -657,8 +662,12 @@ def _draw_frame_own_ego(ax, nusc, sample_token, instance_token,
     overlay[non_drivable] = _hex_to_rgb(PALETTE['grass'])
     overlay[drivable_mask] = _hex_to_rgb(PALETTE['road'])  # dark grey road
     overlay[bev_occ_solid] = _hex_to_rgb(PALETTE['obstacle'])  # orange occluders
-    # Black OSZ shadow — smooth tiny holes for clean rendering
-    overlay[_smooth_osz_mask(osz_pa)] = _hex_to_rgb(PALETTE['osz'])
+    # PA-relevant OSZ (black shadow). Darken the underlying base color so road
+    # and grass remain distinguishable; 65% black + 35% base keeps it dark.
+    osz_smooth = _smooth_osz_mask(osz_pa)
+    black = _hex_to_rgb(PALETTE['osz'])
+    for c in range(3):
+        overlay[osz_smooth, c] = 0.65 * black[c] + 0.35 * overlay[osz_smooth, c]
     ax.imshow(overlay, origin='lower', extent=extent)
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
@@ -1086,8 +1095,12 @@ def _draw_frame_own_ego_emerged(ax, nusc, sample_token,
     overlay[non_drivable] = _hex_to_rgb(PALETTE['grass'])
     overlay[drivable_mask] = _hex_to_rgb(PALETTE['road'])
     overlay[bev_occ_solid] = _hex_to_rgb(PALETTE['obstacle'])
-    # Black OSZ shadow — smooth tiny holes for clean rendering
-    overlay[_smooth_osz_mask(osz_pa)] = _hex_to_rgb(PALETTE['osz'])
+    # PA-relevant OSZ shadow: darken the underlying base color instead of
+    # painting over it, so road/grass texture remains visible underneath.
+    osz_smooth = _smooth_osz_mask(osz_pa)
+    black = _hex_to_rgb(PALETTE['osz'])
+    for c in range(3):
+        overlay[osz_smooth, c] = 0.65 * black[c] + 0.35 * overlay[osz_smooth, c]
     ax.imshow(overlay, origin='lower', extent=extent)
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
