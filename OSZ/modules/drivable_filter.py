@@ -43,13 +43,21 @@ _map_cache = {}
 def get_nusc_map(dataroot: str, map_name: str) -> "NuScenesMap":
     key = (dataroot, map_name)
     if key not in _map_cache:
-        _map_cache[key] = NuScenesMap(dataroot=dataroot, map_name=map_name)
+        try:
+            _map_cache[key] = NuScenesMap(dataroot=dataroot, map_name=map_name)
+        except Exception as e:
+            raise RuntimeError(
+                f"NuScenesMap({dataroot}, {map_name}) failed: {e}  "
+                f"— Is map data present at {dataroot}/maps/?") from e
     return _map_cache[key]
 
 
 def _get_map_name(nusc, scene_token: str) -> str:
     scene = nusc.get('scene', scene_token)
-    return nusc.get('log', scene['log_token'])['location']
+    log = nusc.get('log', scene['log_token'])
+    if log is None:
+        raise RuntimeError(f"log not found for scene_token {scene_token}")
+    return log['location']
 
 
 def _get_ego_pose(nusc, sample_token: str) -> Tuple[np.ndarray, float]:
