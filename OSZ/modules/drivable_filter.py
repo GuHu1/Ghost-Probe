@@ -179,9 +179,14 @@ def build_drivable_mask(
     if not MAP_AVAILABLE:
         return np.ones((nx, ny), dtype=bool)
 
-    sample      = nusc.get('sample', sample_token)
-    map_name    = _get_map_name(nusc, sample['scene_token'])
-    nusc_map    = get_nusc_map(nusc.dataroot, map_name)
+    sample   = nusc.get('sample', sample_token)
+    map_name = _get_map_name(nusc, sample['scene_token'])
+    try:
+        nusc_map = get_nusc_map(nusc.dataroot, map_name)
+    except Exception as e:
+        raise RuntimeError(
+            f"NuScenesMap failed for dataroot={nusc.dataroot}, map={map_name}: {e}"
+        ) from e
     ego_t, ego_yaw = _get_ego_pose(nusc, sample_token)
 
     # patch_box in GLOBAL metres — nuScenes API uses (x,y,H,W)
