@@ -249,14 +249,15 @@ def visualize_event(nusc: NuScenes, event: Dict, ax: plt.Axes,
     overlay[drivable_mask] = _hex_to_rgb(PALETTE['road'])
     # Solid obstacles / voxel-cast surfaces — orange (the thing casting shadow)
     overlay[bev_occ_solid] = _hex_to_rgb(PALETTE['obstacle'])
-    # PA-relevant OSZ (black shadow). Instead of pure black, darken the
-    # existing base color so the road/grass remain visually distinguishable
-    # underneath. 65% black + 35% base keeps the shadow dark but not opaque.
+    # PA-relevant OSZ (black shadow). Light darken (25% black) so road/grass
+    # stay visible underneath, with a cyan contour at the shadow edge.
     osz_smooth = _smooth_osz_mask(osz_pa)
     black = _hex_to_rgb(PALETTE['osz'])
     for c in range(3):
-        overlay[osz_smooth, c] = 0.65 * black[c] + 0.35 * overlay[osz_smooth, c]
+        overlay[osz_smooth, c] = 0.25 * black[c] + 0.75 * overlay[osz_smooth, c]
     ax.imshow(overlay, origin='lower', extent=extent)
+    ax.contour(osz_smooth.astype(np.float32), levels=[0.5], colors=['#00ffff'],
+               linewidths=0.8, origin='lower', extent=extent)
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
     ax.set_facecolor(PALETTE['panel_bg'])
@@ -267,8 +268,8 @@ def visualize_event(nusc: NuScenes, event: Dict, ax: plt.Axes,
 
     # Emerged vehicle position (frame t), already stored in metric ego xy
     ex, ey = event['emerge_bev_xy']
-    ax.plot(ey, ex, '*', color=PALETTE['emerged_star'], markersize=14,
-            path_effects=[pe.withStroke(linewidth=2, foreground='black')],
+    ax.plot(ey, ex, '*', color=PALETTE['emerged_star'], markersize=18,
+            path_effects=[pe.withStroke(linewidth=2.5, foreground='black')],
             label='Emerged (t)')
     # NOTE: plotted as (ey, ex) not (ex, ey) — matplotlib's x-axis here is
     # ego-y (horizontal) and y-axis is ego-x (forward), matching the
@@ -537,8 +538,8 @@ def _draw_annotation_boxes(ax, anns: List[Dict],
         if is_tracked:
             vcolor, _ = VERDICT_STYLE.get(tracked_verdict, VERDICT_STYLE[None])
             poly = mpatches.Polygon(plot_pts, closed=True,
-                                    facecolor=vcolor, edgecolor='black',
-                                    alpha=0.35, linewidth=1.5, zorder=5)
+                                    facecolor=vcolor, edgecolor='white',
+                                    alpha=0.55, linewidth=2.0, zorder=5)
             ax.add_patch(poly)
             # Heading arrow for the tracked vehicle
             dx = np.cos(a['heading']) * 2.5
@@ -555,7 +556,7 @@ def _draw_annotation_boxes(ax, anns: List[Dict],
             edgecolor = PALETTE['vehicle_in_osz'] if inside_osz else PALETTE['other_vehicle_edge']
             poly = mpatches.Polygon(plot_pts, closed=True,
                                     facecolor=facecolor, edgecolor=edgecolor,
-                                    alpha=0.28, linewidth=0.6, zorder=3)
+                                    alpha=0.35, linewidth=0.8, zorder=3)
             ax.add_patch(poly)
         else:
             # Barriers, cones, construction objects, etc.
@@ -662,13 +663,16 @@ def _draw_frame_own_ego(ax, nusc, sample_token, instance_token,
     overlay[non_drivable] = _hex_to_rgb(PALETTE['grass'])
     overlay[drivable_mask] = _hex_to_rgb(PALETTE['road'])  # dark grey road
     overlay[bev_occ_solid] = _hex_to_rgb(PALETTE['obstacle'])  # orange occluders
-    # PA-relevant OSZ (black shadow). Darken the underlying base color so road
-    # and grass remain distinguishable; 65% black + 35% base keeps it dark.
+    # PA-relevant OSZ shadow: light darken overlay so road/grass remain visible,
+    # plus a bright boundary contour so the OSZ shape is easy to read.
     osz_smooth = _smooth_osz_mask(osz_pa)
     black = _hex_to_rgb(PALETTE['osz'])
     for c in range(3):
-        overlay[osz_smooth, c] = 0.65 * black[c] + 0.35 * overlay[osz_smooth, c]
+        overlay[osz_smooth, c] = 0.25 * black[c] + 0.75 * overlay[osz_smooth, c]
     ax.imshow(overlay, origin='lower', extent=extent)
+    # OSZ boundary contour (bright cyan) to make the shadow edge pop
+    ax.contour(osz_smooth.astype(np.float32), levels=[0.5], colors=['#00ffff'],
+               linewidths=0.8, origin='lower', extent=extent)
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
     ax.tick_params(labelsize=5, colors=PALETTE['text_dark'])
@@ -1095,13 +1099,14 @@ def _draw_frame_own_ego_emerged(ax, nusc, sample_token,
     overlay[non_drivable] = _hex_to_rgb(PALETTE['grass'])
     overlay[drivable_mask] = _hex_to_rgb(PALETTE['road'])
     overlay[bev_occ_solid] = _hex_to_rgb(PALETTE['obstacle'])
-    # PA-relevant OSZ shadow: darken the underlying base color instead of
-    # painting over it, so road/grass texture remains visible underneath.
+    # PA-relevant OSZ shadow: light darken (25% black) + cyan contour.
     osz_smooth = _smooth_osz_mask(osz_pa)
     black = _hex_to_rgb(PALETTE['osz'])
     for c in range(3):
-        overlay[osz_smooth, c] = 0.65 * black[c] + 0.35 * overlay[osz_smooth, c]
+        overlay[osz_smooth, c] = 0.25 * black[c] + 0.75 * overlay[osz_smooth, c]
     ax.imshow(overlay, origin='lower', extent=extent)
+    ax.contour(osz_smooth.astype(np.float32), levels=[0.5], colors=['#00ffff'],
+               linewidths=0.8, origin='lower', extent=extent)
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
     ax.tick_params(labelsize=5, colors=PALETTE['text_dark'])
