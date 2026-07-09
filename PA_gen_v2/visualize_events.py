@@ -39,7 +39,7 @@ Three modes (pick with CLI flag):
        - HD map lane boundaries (thin white lines)
        - other scene vehicles (orange if visible, red if inside OSZ)
        - pedestrians (dark dots)
-       - the tracked vehicle (verdict-coloured box + heading arrow)
+       - the tracked vehicle (magenta box + white edge + heading arrow)
        - ego marker (blue triangle) at frame's own origin
 
      Why "own ego frame" per panel: each frame's OSZ is computed in
@@ -78,6 +78,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import matplotlib.patheffects as pe
+from matplotlib.colors import ListedColormap
 
 try:
     from scipy.ndimage import binary_dilation
@@ -121,7 +122,7 @@ VERDICT_STYLE = {
 # High-contrast light-theme colour palette (matches user reference).
 # ─────────────────────────────────────────────────────────────────────
 # White background, dark-grey road, light-grey sidewalk, green grass,
-# orange occluders, black OSZ shadow, blue ego, red vehicles inside OSZ.
+# orange occluders, black OSZ shadow, blue ego, magenta tracked vehicle.
 PALETTE = {
     # BEV base layers
     'bg':              '#ffffff',   # figure background (white)
@@ -136,9 +137,12 @@ PALETTE = {
 
     # Vehicles / agents
     'ego':             '#1976d2',   # blue ego marker
-    'other_vehicle':   '#ff9800',   # orange for vehicles visible in the open
+    'other_vehicle':   '#ff9800',   # other vehicles visible in the open (orange)
     'other_vehicle_edge': '#e65100',
-    'vehicle_in_osz':  '#d32f2f',   # red for vehicles that sit inside OSZ
+    'vehicle_in_osz':  '#ff0000',   # other vehicles inside OSZ (red)
+    'vehicle_in_osz_edge': '#ffffff',
+    'tracked_gt':      '#ff00ff',   # tracked vehicle (training GT) — magenta
+    'tracked_gt_edge': '#ffffff',
     'pedestrian':      '#7b1fa2',   # purple pedestrian dot
     'tracked_arrow':   '#111111',   # heading arrow for tracked vehicle
     'emerged_star':    '#ffffff',   # bright star on top of emerged vehicle
@@ -162,6 +166,47 @@ def _hex_to_rgb(h: str):
     """Convert '#rrggbb' to (r,g,b) in [0,1]."""
     h = h.lstrip('#')
     return tuple(int(h[i:i+2], 16) / 255.0 for i in (0, 2, 4))
+
+
+# OSZ is drawn as a separate imshow layer on top of the road/grass/obstacles
+# RGB overlay (alpha-blended) so the underlying road stays visible inside the
+# shadow. Painted solid red on top of dark-grey road obliterates the road and
+# makes the shadow geometry unreadable — see git log: "red shadow on top of
+# road = whole road looks red".
+#
+# Alpha 0.45 + a 1.5-pt white contour at level=0.5: the contour is what
+# actually carries the shape information when the shadow fully covers the
+# road (e.g. a narrow urban corridor where the entire road is in OSZ).
+# Matches OSZ/visualize/bev_viz.py:plot_gt_osz's refined-boundary contour
+# styling (line 282 of bev_viz.py).
+_OSZ_ALPHA = 0.45
+_OSZ_CONTOUR_LW = 1.5
+
+_OSZ_CMAP_CACHE = None
+def _osz_cmap() -> ListedColormap:
+    global _OSZ_CMAP_CACHE
+    if _OSZ_CMAP_CACHE is None:
+        _OSZ_CMAP_CACHE = ListedColormap(['none', PALETTE['osz']])
+    return _OSZ_CMAP_CACHE
+
+
+def _draw_osz_layer(ax: plt.Axes, osz_mask: np.ndarray, extent) -> None:
+    """Draw PA-relevant OSZ as a translucent black layer on top of ax,
+    plus a 1.5-pt white contour at the shadow boundary.
+
+    Two layers:
+      - translucent fill (alpha=0.45) so the road/grass underneath darkens
+        but the road's dark-grey stays clearly readable
+      - white contour at level 0.5 (1.5pt) so the OSZ boundary is always
+        readable, even when the shadow fully covers a narrow road. This is
+        the same trick plot_gt_osz uses to show refined boundaries.
+    """
+    ax.imshow(osz_mask, origin='lower', extent=extent,
+              cmap=_osz_cmap(), vmin=0, vmax=1,
+              interpolation='nearest', alpha=_OSZ_ALPHA)
+    ax.contour(osz_mask.astype(np.float32), levels=[0.5],
+               colors=['white'], linewidths=_OSZ_CONTOUR_LW,
+               origin='lower', extent=extent)
 
 
 def _smooth_osz_mask(osz_mask: np.ndarray, iterations: int = 1) -> np.ndarray:
@@ -249,11 +294,11 @@ def visualize_event(nusc: NuScenes, event: Dict, ax: plt.Axes,
     overlay[drivable_mask] = _hex_to_rgb(PALETTE['road'])
     # Solid obstacles / voxel-cast surfaces — orange (the thing casting shadow)
     overlay[bev_occ_solid] = _hex_to_rgb(PALETTE['obstacle'])
-    # PA-relevant OSZ (black shadow) — solid black, matching OSZ's
-    # plot_gt_osz / plot_osz_explained palette.
+    # PA-relevant OSZ: translucent red layer on top so the road underneath
+    # stays visible (see _draw_osz_layer for the why).
     osz_smooth = _smooth_osz_mask(osz_pa)
-    overlay[osz_smooth] = _hex_to_rgb(PALETTE['osz'])
     ax.imshow(overlay, origin='lower', extent=extent)
+    _draw_osz_layer(ax, osz_smooth, extent)
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
     ax.set_facecolor(PALETTE['panel_bg'])
@@ -322,6 +367,9 @@ def visualize_event(nusc: NuScenes, event: Dict, ax: plt.Axes,
         mpatches.Patch(color=_hex_to_rgb(PALETTE['road']), label='Drivable area (road)'),
         mpatches.Patch(color=_hex_to_rgb(PALETTE['obstacle']), label='Occluder (wall / vehicle)'),
         mpatches.Patch(color=_hex_to_rgb(PALETTE['osz']), label='PA-relevant OSZ'),
+        mpatches.Patch(color=_hex_to_rgb(PALETTE['tracked_gt']),
+                       edgecolor=PALETTE['tracked_gt_edge'],
+                       label='TRACKED vehicle (training GT)'),
         plt.Line2D([0],[0], marker='*', color=PALETTE['emerged_star'], markersize=8,
                    linestyle='none', label='Emerged (t)'),
         plt.Line2D([0],[0], marker='o', color=VERDICT_STYLE[True][0], markersize=5,
@@ -509,8 +557,16 @@ def _draw_annotation_boxes(ax, anns: List[Dict],
                            tracked_verdict=None) -> None:
     """Draw all annotation BEV boxes on ax (axes uses ego-y, ego-x).
 
-    Vehicles whose centre lies inside the OSZ are drawn in red; vehicles
-    in the open are drawn in orange. Pedestrians are dark-grey dots.
+    Mirrors OSZ/visualize/bev_viz.plot_gt_osz style so the two QA views look
+    the same:
+      - tracked vehicle: solid magenta box, white edge, white forward arrow.
+        This is the *only* element coloured with a non-natural hue so it
+        pops against the dark-grey road / black OSZ / orange occluders —
+        its job is to tell the eye "this is the GT you would train on".
+      - other vehicles: orange fill (visible) or red fill (inside OSZ),
+        edge in the matching darker tone, plus a forward arrow.
+      - pedestrians: small dark-grey dots.
+      - other objects: light-grey dashed-style outline.
     """
     for a in anns:
         if not osz_source.in_bev_range(a['x'], a['y']):
@@ -521,7 +577,6 @@ def _draw_annotation_boxes(ax, anns: List[Dict],
         cat = a['category']
 
         if cat.startswith('human'):
-            # Pedestrians: small dark dots, no box (too small to matter at BEV scale)
             ax.plot(a['y'], a['x'], 'o', color=PALETTE['pedestrian'],
                     markersize=2.5, alpha=0.8)
             continue
@@ -531,31 +586,41 @@ def _draw_annotation_boxes(ax, anns: List[Dict],
         # Swap to plot coords: matplotlib x-axis=ego-y, y-axis=ego-x
         plot_pts = corners[:, [1, 0]]
 
+        # Forward arrow geometry — used for tracked + other vehicles.
+        cos_h, sin_h = np.cos(a['heading']), np.sin(a['heading'])
+
         if is_tracked:
-            vcolor, _ = VERDICT_STYLE.get(tracked_verdict, VERDICT_STYLE[None])
             poly = mpatches.Polygon(plot_pts, closed=True,
-                                    facecolor=vcolor, edgecolor='white',
-                                    alpha=0.55, linewidth=2.0, zorder=5)
+                                    facecolor=PALETTE['tracked_gt'],
+                                    edgecolor=PALETTE['tracked_gt_edge'],
+                                    alpha=0.9, linewidth=2.4, zorder=7)
             ax.add_patch(poly)
-            # Heading arrow for the tracked vehicle
-            dx = np.cos(a['heading']) * 2.5
-            dy = np.sin(a['heading']) * 2.5
-            ax.annotate('', xy=(a['y'] + dy, a['x'] + dx),
-                        xytext=(a['y'], a['x']),
-                        arrowprops=dict(arrowstyle='->', color=PALETTE['tracked_arrow'],
-                                        lw=1.5), zorder=6)
+            front_len = a['l'] * 0.4
+            ax.annotate(
+                '', xy=(a['y'] + sin_h * front_len, a['x'] + cos_h * front_len),
+                xytext=(a['y'], a['x']),
+                arrowprops=dict(arrowstyle='->',
+                                color=PALETTE['tracked_gt_edge'],
+                                lw=1.6, mutation_scale=10),
+                zorder=8)
         elif cat.startswith('vehicle'):
-            # Vehicle in OSZ → red; vehicle in the open → orange
             inside_osz = (osz_source.in_bev_range(a['x'], a['y']) and
                           osz_source.is_in_osz(a['x'], a['y'], osz_mask))
             facecolor = PALETTE['vehicle_in_osz'] if inside_osz else PALETTE['other_vehicle']
-            edgecolor = PALETTE['vehicle_in_osz'] if inside_osz else PALETTE['other_vehicle_edge']
+            edgecolor = (PALETTE['vehicle_in_osz_edge'] if inside_osz
+                         else PALETTE['other_vehicle_edge'])
             poly = mpatches.Polygon(plot_pts, closed=True,
                                     facecolor=facecolor, edgecolor=edgecolor,
-                                    alpha=0.35, linewidth=0.8, zorder=3)
+                                    alpha=0.55, linewidth=1.0, zorder=3)
             ax.add_patch(poly)
+            front_len = a['l'] * 0.4
+            ax.annotate(
+                '', xy=(a['y'] + sin_h * front_len, a['x'] + cos_h * front_len),
+                xytext=(a['y'], a['x']),
+                arrowprops=dict(arrowstyle='->', color=facecolor,
+                                lw=0.9, mutation_scale=8),
+                zorder=4)
         else:
-            # Barriers, cones, construction objects, etc.
             poly = mpatches.Polygon(plot_pts, closed=True,
                                     facecolor='#9ca3af', edgecolor='#4b5563',
                                     alpha=0.18, linewidth=0.4, zorder=3)
@@ -659,10 +724,10 @@ def _draw_frame_own_ego(ax, nusc, sample_token, instance_token,
     overlay[non_drivable] = _hex_to_rgb(PALETTE['grass'])
     overlay[drivable_mask] = _hex_to_rgb(PALETTE['road'])  # dark grey road
     overlay[bev_occ_solid] = _hex_to_rgb(PALETTE['obstacle'])  # orange occluders
-    # PA-relevant OSZ shadow — solid black, matching OSZ's BEV palette.
+    # PA-relevant OSZ: translucent red layer (road stays visible inside).
     osz_smooth = _smooth_osz_mask(osz_pa)
-    overlay[osz_smooth] = _hex_to_rgb(PALETTE['osz'])
     ax.imshow(overlay, origin='lower', extent=extent)
+    _draw_osz_layer(ax, osz_smooth, extent)
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
     ax.tick_params(labelsize=5, colors=PALETTE['text_dark'])
@@ -1089,10 +1154,10 @@ def _draw_frame_own_ego_emerged(ax, nusc, sample_token,
     overlay[non_drivable] = _hex_to_rgb(PALETTE['grass'])
     overlay[drivable_mask] = _hex_to_rgb(PALETTE['road'])
     overlay[bev_occ_solid] = _hex_to_rgb(PALETTE['obstacle'])
-    # PA-relevant OSZ shadow — solid black, matching OSZ's BEV palette.
+    # PA-relevant OSZ: translucent red layer (road stays visible inside).
     osz_smooth = _smooth_osz_mask(osz_pa)
-    overlay[osz_smooth] = _hex_to_rgb(PALETTE['osz'])
     ax.imshow(overlay, origin='lower', extent=extent)
+    _draw_osz_layer(ax, osz_smooth, extent)
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
     ax.tick_params(labelsize=5, colors=PALETTE['text_dark'])
@@ -1196,10 +1261,10 @@ def _draw_info_panel(ax, nusc, event, idx, total, label_filter,
     add('  ■ green   = non-drivable ground (grass / sidewalk)', PALETTE['grass'])
     add('  ■ orange  = other vehicles in the open', PALETTE['other_vehicle'])
     add('  ■ red     = other vehicles inside OSZ', PALETTE['vehicle_in_osz'])
+    add('  ■ magenta = TRACKED vehicle (training GT)', PALETTE['tracked_gt'])
     add('  ■ dk dot  = pedestrians', PALETTE['pedestrian'])
     add('  ■ white ln= lane boundaries', PALETTE['lane'])
-    add('  ★ white   = emerged vehicle (red box) position', PALETTE['emerged_star'])
-    add('  ■ red box = tracked vehicle in OSZ during lookback', PALETTE['vehicle_in_osz'])
+    add('  ★ white   = emerged vehicle (t frame)', PALETTE['emerged_star'])
     add('─' * 40, PALETTE['info_separator'])
     add('read the grid:', PALETTE['text_dark'], 'bold')
     add('  • car stayed in OSZ?  red dots across t-4..t-1', PALETTE['text_light'])
