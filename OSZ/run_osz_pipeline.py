@@ -6,8 +6,8 @@ Ties all stages together:
   Stage 1+2 : 3D ray casting  →  V_occ^c  (per camera, height-stratified)
   Stage 3   : Z-axis max-pool →  M_occ^c  (per camera BEV mask)
   Stage 4a  : Multi-camera AND → M_OSZ   (raw geometric OSZ)
-  Stage 4b  : passthrough     →  M_OSZ_refined = M_OSZ (CRF removed; see note in code)
-  [Optional] Stage 5: CNN refinement training loop (self-supervised via LiDAR GT)
+  Stage 4b  : Drivable filter →  M_OSZ_PA = M_OSZ ∩ drivable area
+  Stage 5   : Visualization   →  PNG exports
 
 Run:
   # With real nuScenes data:
@@ -43,9 +43,9 @@ except ImportError:
     _DRIVABLE_FILTER_AVAILABLE = False
 
 from utils.nuscenes_loader   import NuScenesOSZLoader
-from visualize.bev_viz       import (plot_bev_osz, plot_refinement_comparison,
+from visualize.bev_viz       import (plot_camera_osz_comparison, plot_pa_osz,
                                      plot_camera_osz_comparison, plot_pa_osz,
-                                     plot_gt_osz)
+                                     plot_gt_osz, plot_osz_explained)
 from common.bev_config import (
     BEV_RANGE_XYXY   as DEFAULT_BEV_RANGE,
     BEV_RESOLUTION_M as DEFAULT_BEV_RES,
@@ -201,15 +201,10 @@ def main():
         print(f"  Ego OSZ cells: {osz_raw.sum()}  "
               f"/ {caster.nx * caster.ny} BEV cells")
 
-        # BEV depth map for CRF
+        # BEV depth map for visualization
         depth_bev = aggregate_depth_bev(cameras, caster)
 
-        # Stage 4b: passthrough (CRF removed, see comment above)
-        # osz_refined is kept as float32 for downstream compatibility
-        # (plot functions and .npy saves expect float, not bool).
-        osz_refined = osz_raw.astype(np.float32)
-
-        # Stage 4c: semantic filter — intersect geometric OSZ with
+        # Stage 4b: semantic filter — intersect geometric OSZ with
         # vehicle-plausible area from nuScenes HD map.
         # This is the critical step that resolves the "surrounded by buildings
         # = 70% OSZ" problem: buildings are geometrically occluding, but
@@ -235,35 +230,13 @@ def main():
             print("  Drivable filter: skipped (mock mode or map unavailable)")
 
         # ── Visualize ────────────────────────────────────────────────────
-        fig1 = plot_bev_osz(
-            per_cam_masks = per_cam_masks,
-            osz_mask      = osz_raw,
-            bev_range     = tuple(args.bev_range),
-            refined_mask  = osz_refined,
-            depth_bev     = depth_bev,
-            bev_occ       = bev_occ,
-            title         = f"OSZ — {token}",
-            save_path     = str(outdir / f"frame_{frame_idx:04d}_osz.png"),
-        )
-        plt.close(fig1)
-
-        fig2 = plot_refinement_comparison(
-            raw_mask    = osz_raw,
-            refined_soft= osz_refined,
-            depth_bev   = depth_bev,
-            bev_occ     = bev_occ,
-            bev_range   = tuple(args.bev_range),
-            save_path   = str(outdir / f"frame_{frame_idx:04d}_refine.png"),
-        )
-        plt.close(fig2)
-
         # ── Camera vs BEV comparison (with image & frame token) ────────────
         fig3 = plot_camera_osz_comparison(
             images       = cam_images,
             depth_maps   = cam_depths,
             per_cam_masks= per_cam_masks,
             osz_mask     = osz_raw,
-            refined_mask = osz_refined,
+            refined_mask = None,
             depth_bev    = depth_bev,
             bev_occ      = bev_occ,
             bev_range    = tuple(args.bev_range),
@@ -296,15 +269,34 @@ def main():
                     sample_token = token,
                     bev_range    = tuple(args.bev_range),
                     bev_res      = args.bev_res,
-                    save_path    = str(outdir / f"frame_{frame_idx:04d}_gt_osz.png"),
+                    save_path    = str(outdir / f"frame_{frame_idx:04d}_pa.png"),
                 )
                 plt.close(fig5)
             except Exception as e:
                 print(f"  [WARN] GT viz failed: {e}")
 
+        # OSZ explained: single-panel view showing occluders (orange) + shadow
+        # (black) + road (dark grey) — same palette as PA_gen_v2.
+        try:
+            fig_osz_exp = plot_osz_explained(
+                osz_pa        = osz_pa,
+                bev_occ       = bev_occ,
+                drivable_mask = drivable_mask,
+                bev_range     = tuple(args.bev_range),
+                sample_token  = token,
+                save_path     = str(outdir / f"frame_{frame_idx:04d}_osz.png"),
+                draw_lanes    = (drivable_mask is not None and
+                                 not loader._use_mock and
+                                 hasattr(loader, 'nusc')),
+                nusc          = loader.nusc if (not loader._use_mock and
+                                                hasattr(loader, 'nusc')) else None,
+            )
+            plt.close(fig_osz_exp)
+        except Exception as e:
+            print(f"  [WARN] OSZ explained viz failed: {e}")
+
         # Save numpy arrays for downstream PA framework integration
         np.save(outdir / f"frame_{frame_idx:04d}_osz_raw.npy",     osz_raw)
-        np.save(outdir / f"frame_{frame_idx:04d}_osz_refined.npy", osz_refined)
         np.save(outdir / f"frame_{frame_idx:04d}_depth_bev.npy",   depth_bev)
         np.save(outdir / f"frame_{frame_idx:04d}_osz_pa.npy",      osz_pa)
         if drivable_mask is not None:
