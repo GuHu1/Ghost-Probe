@@ -231,7 +231,10 @@ def aggregate_lidar_sweeps(nusc, sample_token: str,
             continue
 
         # Ego-motion compensation: past_ego → global → current_ego
-        T_past_ego2global = _ego_pose_tf(nusc, sd['token'])
+        ep = nusc.get('ego_pose', sd['ego_pose_token'])
+        T_past_ego2global = transform_matrix(
+            ep['translation'], Quaternion(ep['rotation']), inverse=False
+        ).astype(np.float64)
         pts_global_h = (T_past_ego2global @
                         np.concatenate([pts_p_ego,
                                         np.ones((len(pts_p_ego), 1))], axis=1).T).T

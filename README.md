@@ -95,59 +95,69 @@ BEV grid: 500x500 cells @ 0.2m/cell (±50.0m range, 250,000 cells total)
 
 ## 快速开始
 
-### 1. OSZ 几何流程（无需真实数据即可验证）
-
-```bash
-cd OSZ/
-python run_osz_pipeline.py --mock
-```
-
-`--mock` 使用合成数据跑通 3D 体素投射、2D 射线投射、可视化全流程，不依赖 nuScenes。
-
-### 2. OSZ 几何流程（真实 nuScenes 数据）
-
-```bash
-cd OSZ/
-python run_osz_pipeline.py --dataroot /data/sets/nuscenes --version v1.0-mini
-```
-
-### 3. PA_gen_v2 幽灵车辆挖掘（完整流程）
+### 1. PA_gen_v2 幽灵车辆挖掘（完整流程，推荐）
 
 ```bash
 cd PA_gen_v2/
-python run_pipeline.py --dataroot /data/sets/nuscenes --version v1.0-mini
+python run_pipeline.py --dataroot /path/to/nuscenes --version v1.0-mini
 ```
 
-这会依次执行：单元测试 → 单帧 OSZ 可视化检查 → 全量挖掘 → 事件可视化。
+依次执行：单元测试(16项) → 单帧OSZ可视化检查 → 全量挖掘 → 事件可视化。
 
-### 4. PA_gen_v2 事件质检（交互式）
+输出：
+- `output/osz_sample_viz.png`     — OSZ几何 + GT车框对比
+- `output/ghost_events_mini.json` — 挖掘出的事件数据
+- `output/events_positive.png`    — 正样本网格
+- `output/events_negative.png`    — 负样本网格
+
+可选参数：
+- `--sample_idx 5`   用于可视化的样本索引
+- `--lookback 4`    回溯帧数
+- `--min_osz 1`     最少OSZ帧数要求
+- `--skip_steps 1 2` 跳过某些步骤（1=单元测试, 2=可视化, 3=挖掘, 4=事件图）
+
+### 2. OSZ 几何流程（独立运行）
+
+```bash
+cd OSZ/
+python run_osz_pipeline.py --dataroot /path/to/nuscenes --version v1.0-mini
+
+# 或不用真实数据，纯合成 mock：
+python run_osz_pipeline.py --mock
+```
+
+输出 PNG（在 `OSZ/output/`）：
+- `frame_XXXX_osz.png`        — OSZ explained：障碍物(橙)+阴影(黑)+道路(深灰)
+- `frame_XXXX_pa.png`         — GT车框 + phantom候选
+- `frame_XXXX_comparison.png` — 相机深度图 vs BEV OSZ 对比
+
+### 3. 事件质检（交互式）
 
 ```bash
 cd PA_gen_v2/
 
 # GUI 模式（弹出 matplotlib 窗口，n/p/r/q 翻页）
-python visualize_events.py --dataroot /data/sets/nuscenes --browse
+python visualize_events.py --dataroot /path/to/nuscenes --browse
 
-# 终端+PNG 模式（无 GUI 依赖，每事件一张独立 PNG）
-python visualize_events.py --dataroot /data/sets/nuscenes --browse --headless
+# 终端+PNG 模式（无 GUI 依赖）
+python visualize_events.py --dataroot /path/to/nuscenes --browse --headless
 
 # 浏览器图廊模式（最推荐，绕开 matplotlib 窗口卡顿）
-python visualize_events.py --dataroot /data/sets/nuscenes --web
+python visualize_events.py --dataroot /path/to/nuscenes --web
 ```
 
-### 5. 距离分布统计 + 阈值建议
+### 4. 距离分布统计 + 阈值建议
 
 ```bash
 cd PA_gen_v2/
 python analyze_distances.py
-# 输出：output/distance_analysis.png (2x2 图) + output/distance_analysis.csv + 终端报告
 ```
 
-### 6. PA_gen_v1 基于标注 visibility 生成标签
+### 5. PA_gen_v1 基于标注 visibility 生成标签
 
 ```bash
 cd PA_gen_v1/
-python create_pa_labels_mini.py --dataroot /data/sets/nuscenes \
+python create_pa_labels_mini.py --dataroot /path/to/nuscenes \
                                 --outdir_base ./output/pa_labels
 ```
 
@@ -159,22 +169,23 @@ python create_pa_labels_mini.py --dataroot /data/sets/nuscenes \
 
 核心流程：
 
-1. **Stage 1+2**：对每路相机做 3D 体素投射，得到 `V_occ^c`（相机视角下的真实遮挡物表面体素）。
-2. **Stage 3**：沿 Z 轴 max-pool，得到每路相机的 BEV 遮挡掩码 `M_occ^c`。
-3. **Stage 4a**：以自车为中心做 2D BEV 射线投射，得到原始几何 OSZ `M_OSZ`。
-4. **Stage 4c（可选）**：将原始 OSZ 与 HD-map 可行驶区域取交集，得到 **PA-relevant OSZ**。
+1. **LiDAR 多帧聚合**：当前帧 + 前 N 帧历史 sweep（仅 past），ego-motion 补偿后地面过滤。
+2. **直接点云体素化**：绕过深度图中转，点云直接 bin 到 3D 体素网格（x, y, z）。
+3. **Z 轴 max-pool**：得到 solid BEV 障碍物掩码 `bev_occ`。
+4. **2D 射线投射**：从 ego 在各方向发 ray，碰到 `bev_occ` 后标记为 OSZ。
+5. **可行驶区域过滤**：原始 OSZ ∩ HD-map 可行驶区域 = PA-relevant OSZ（仅道路上的阴影）。
 
-> 原始几何 OSZ 在密集城区可能覆盖 70-80% BEV 区域，这是**预期行为**（建筑物阴影）。
-> 真正用于 Phantom Agent 挖掘的是"原始 OSZ ∩ 可行驶区域"，不是原始 OSZ。
+> CRF 后处理已移除；不再依赖深度图插值。OSZ 纯靠 LiDAR 点云驱动。
 
 关键文件：
 
 | 文件 | 作用 |
 |---|---|
-| `OSZ/modules/ray_casting.py` | 3D 体素投射 + **向量化** 2D 自车射线投射（纯 numpy） |
+| `OSZ/modules/ray_casting.py` | 3D 体素投射 + **向量化** 2D BEV 射线投射 + 直接点云体素化 |
 | `OSZ/modules/drivable_filter.py` | 原始 OSZ ∩ HD-map 可行驶区域 = PA-relevant OSZ |
-| `OSZ/utils/nuscenes_loader.py` | 按 sample_token 构建单帧相机深度图、内外参 |
-| `OSZ/run_osz_pipeline.py` | 主入口，支持 `--mock`、CLI 覆盖 BEV 参数 |
+| `OSZ/utils/nuscenes_loader.py` | LiDAR 加载、地面过滤、**多帧聚合（仅 past sweep）** |
+| `OSZ/visualize/bev_viz.py` | BEV 可视化，统一 PA_gen_v2 调色板 |
+| `OSZ/run_osz_pipeline.py` | OSZ 主入口，支持 `--mock` |
 
 ### `PA_gen_v1/` — 基于 nuScenes visibility 标签
 
@@ -194,23 +205,24 @@ python create_pa_labels_mini.py --dataroot /data/sets/nuscenes \
 
 ### `PA_gen_v2/` — 基于几何 OSZ 的幽灵车辆挖掘
 
-不读 `visibility_token`，而是用 `OSZ/` 算出的真实几何遮挡区去判断车辆是否"被挡住"，再挖掘"从遮挡区冒出来"的幽灵车辆出现事件。
+用 `OSZ/` 算出的真实几何遮挡区判断车辆是否"被挡住"，挖掘"从遮挡区冒出来"的幽灵车辆出现事件。
 
-详细说明（含坐标轴约定、可行驶区域过滤、回溯帧三态判定的修复、可视化三模式、性能优化）见：
-
-- **[PA_gen_v2/README.md](PA_gen_v2/README.md)**
+**PA 判定逻辑（关键）：**
+- 车辆 BEV 框栅格化到网格上，逐格判断。
+- **LiDAR 命中排除**：框内任一一格被 `bev_occ`（LiDAR 表面）覆盖 → 车辆被传感器看到 → **不是 PA**（它是 occluder 本人）。
+- **全部在阴影中**：框内所有格都在 `osz_pa` 内且零格命中 → **真 PA**。
+- 仅支持 **vehicle.\*（含 bicycle/motorcycle）**；行人已移除。
 
 | 文件 | 作用 |
 |---|---|
-| `osz_source.py` | 桥接层：把 `OSZ/` 包装成 PA_gen_v2 的单帧查询接口；**含 OSZ 磁盘缓存**（第一次算完存盘，第二次秒出） |
-| `ghost_vehicle_miner.py` | 主挖掘逻辑，输出 JSON 事件列表 |
-| `trajectory.py` | 完整轨迹插值，修复"缺标注就默认被遮挡"的隐藏假设（KNOWN/INTERPOLATED/NO_EVIDENCE 三态） |
-| `visualize_events.py` | 事件可视化，**支持 GUI/headless/web 三种浏览模式**，每帧显示全场景 BEV 真值 + HD 地图车道线 |
+| `osz_source.py` | 桥接层：包装 OSZ/ 为单帧查询接口，含 `is_box_occluded_not_occluder`、磁盘缓存 |
+| `ghost_vehicle_miner.py` | 主挖掘逻辑，KNOW 帧整框检查 + INTERPOLATED 帧中心点回退 |
+| `trajectory.py` | 轨迹插值（KNOWN/INTERPOLATED/NO_EVIDENCE 三态） |
+| `visualize_events.py` | 事件可视化，GUI/headless/web 三模式 |
 | `osz_source_viz.py` | 单帧 OSZ 几何检查 |
-| `analyze_distances.py` | 正样本距离分布统计 + 数据驱动阈值建议 |
-| `test_units.py` / `test_synthetic_e2e.py` | 单元测试与合成场景端到端测试 |
+| `analyze_distances.py` | 距离分布统计 |
+| `test_units.py` | 16 项单元测试 |
 | `run_pipeline.py` | 一键跑完整流程 |
-| `osz_geometry_legacy.py` | 旧版 PA_gen_v2 自带的 OSZ 实现，已废弃，仅作历史参考 |
 
 ---
 
