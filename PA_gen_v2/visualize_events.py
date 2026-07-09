@@ -249,15 +249,11 @@ def visualize_event(nusc: NuScenes, event: Dict, ax: plt.Axes,
     overlay[drivable_mask] = _hex_to_rgb(PALETTE['road'])
     # Solid obstacles / voxel-cast surfaces — orange (the thing casting shadow)
     overlay[bev_occ_solid] = _hex_to_rgb(PALETTE['obstacle'])
-    # PA-relevant OSZ (black shadow). Light darken (25% black) so road/grass
-    # stay visible underneath, with a cyan contour at the shadow edge.
+    # PA-relevant OSZ (black shadow) — solid black, matching OSZ's
+    # plot_gt_osz / plot_osz_explained palette.
     osz_smooth = _smooth_osz_mask(osz_pa)
-    black = _hex_to_rgb(PALETTE['osz'])
-    for c in range(3):
-        overlay[osz_smooth, c] = 0.25 * black[c] + 0.75 * overlay[osz_smooth, c]
+    overlay[osz_smooth] = _hex_to_rgb(PALETTE['osz'])
     ax.imshow(overlay, origin='lower', extent=extent)
-    ax.contour(osz_smooth.astype(np.float32), levels=[0.5], colors=['#00ffff'],
-               linewidths=0.8, origin='lower', extent=extent)
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
     ax.set_facecolor(PALETTE['panel_bg'])
@@ -663,16 +659,10 @@ def _draw_frame_own_ego(ax, nusc, sample_token, instance_token,
     overlay[non_drivable] = _hex_to_rgb(PALETTE['grass'])
     overlay[drivable_mask] = _hex_to_rgb(PALETTE['road'])  # dark grey road
     overlay[bev_occ_solid] = _hex_to_rgb(PALETTE['obstacle'])  # orange occluders
-    # PA-relevant OSZ shadow: light darken overlay so road/grass remain visible,
-    # plus a bright boundary contour so the OSZ shape is easy to read.
+    # PA-relevant OSZ shadow — solid black, matching OSZ's BEV palette.
     osz_smooth = _smooth_osz_mask(osz_pa)
-    black = _hex_to_rgb(PALETTE['osz'])
-    for c in range(3):
-        overlay[osz_smooth, c] = 0.25 * black[c] + 0.75 * overlay[osz_smooth, c]
+    overlay[osz_smooth] = _hex_to_rgb(PALETTE['osz'])
     ax.imshow(overlay, origin='lower', extent=extent)
-    # OSZ boundary contour (bright cyan) to make the shadow edge pop
-    ax.contour(osz_smooth.astype(np.float32), levels=[0.5], colors=['#00ffff'],
-               linewidths=0.8, origin='lower', extent=extent)
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
     ax.tick_params(labelsize=5, colors=PALETTE['text_dark'])
@@ -1099,14 +1089,10 @@ def _draw_frame_own_ego_emerged(ax, nusc, sample_token,
     overlay[non_drivable] = _hex_to_rgb(PALETTE['grass'])
     overlay[drivable_mask] = _hex_to_rgb(PALETTE['road'])
     overlay[bev_occ_solid] = _hex_to_rgb(PALETTE['obstacle'])
-    # PA-relevant OSZ shadow: light darken (25% black) + cyan contour.
+    # PA-relevant OSZ shadow — solid black, matching OSZ's BEV palette.
     osz_smooth = _smooth_osz_mask(osz_pa)
-    black = _hex_to_rgb(PALETTE['osz'])
-    for c in range(3):
-        overlay[osz_smooth, c] = 0.25 * black[c] + 0.75 * overlay[osz_smooth, c]
+    overlay[osz_smooth] = _hex_to_rgb(PALETTE['osz'])
     ax.imshow(overlay, origin='lower', extent=extent)
-    ax.contour(osz_smooth.astype(np.float32), levels=[0.5], colors=['#00ffff'],
-               linewidths=0.8, origin='lower', extent=extent)
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
     ax.tick_params(labelsize=5, colors=PALETTE['text_dark'])
