@@ -500,13 +500,6 @@ def plot_gt_osz(
         'vehicle.trailer', 'vehicle.construction',
         'vehicle.emergency.ambulance', 'vehicle.emergency.police',
     }
-    PERSON_CATS = {
-        'human.pedestrian.adult', 'human.pedestrian.child',
-        'human.pedestrian.wheelchair', 'human.pedestrian.stroller',
-        'human.pedestrian.personal_mobility',
-        'human.pedestrian.police_officer',
-        'human.pedestrian.construction_worker',
-    }
 
     fig, ax = plt.subplots(1, 1, figsize=(10, 10))
     x_min, x_max, y_min, y_max = bev_range
@@ -532,14 +525,50 @@ def plot_gt_osz(
     # ── GT boxes ─────────────────────────────────────────────────────────
     boxes = get_gt_boxes_ego(nusc, sample_token, bev_range)
 
+    # Rasterise each box footprint and check overlap with bev_occ + osz_pa.
+    # A vehicle is PA only if ZERO LiDAR-hit cells are inside its footprint
+    # AND all footprint cells fall inside OSZ.
     for box in boxes:
-        xi = int(np.rint((box['cx'] - x_min) / bev_res))
-        yi = int(np.rint((y_max - box['cy']) / bev_res))
-        if 0 <= xi < osz_pa.shape[0] and 0 <= yi < osz_pa.shape[1]:
-            box['in_osz'] = bool(osz_pa[xi, yi])
+        w, l = box['width'], box['length']
+        cos_h, sin_h = np.cos(box['yaw']), np.sin(box['yaw'])
+        half_local = np.array([[ l/2,  w/2],
+                                [ l/2, -w/2],
+                                [-l/2, -w/2],
+                                [-l/2,  w/2]], dtype=np.float32)
+        R = np.array([[cos_h, -sin_h], [sin_h,  cos_h]], dtype=np.float32)
+        corners = (R @ half_local.T).T + np.array([box['cx'], box['cy']], dtype=np.float32)
+
+        # AABB in BEV indices
+        i_lo = max(0, int(np.floor((corners[:, 0].min() - x_min) / bev_res)))
+        i_hi = min(nx - 1, int(np.ceil((corners[:, 0].max() - x_min) / bev_res)))
+        j_lo = max(0, int(np.floor((y_max - corners[:, 1].max()) / bev_res)))
+        j_hi = min(ny - 1, int(np.ceil((y_max - corners[:, 1].min()) / bev_res)))
+
+        Rt = R.T
+        total = 0
+        n_in_occ = 0
+        for i in range(i_lo, i_hi + 1):
+            x_c = x_min + (i + 0.5) * bev_res
+            for j in range(j_lo, j_hi + 1):
+                y_c = y_max - (j + 0.5) * bev_res
+                dx = x_c - box['cx']
+                dy = y_c - box['cy']
+                lx = Rt[0, 0] * dx + Rt[0, 1] * dy
+                ly = Rt[1, 0] * dx + Rt[1, 1] * dy
+                if abs(lx) > l / 2 or abs(ly) > w / 2:
+                    continue
+                total += 1
+                if bev_occ[i, j]:
+                    n_in_occ += 1
+
+        box['in_osz'] = (n_in_occ == 0) and (total > 0) and bool(osz_pa[
+            int(np.rint((box['cx'] - x_min) / bev_res)),
+            int(np.rint((y_max - box['cy']) / bev_res))])
+        box['occ_overlap'] = n_in_occ / max(total, 1)
+        box['footprint_cells'] = total
 
     n_phantom = sum(1 for b in boxes
-                    if b['in_osz'] and b['category'] in VEHICLE_CATS | PERSON_CATS)
+                    if b['in_osz'] and b['category'] in VEHICLE_CATS)
 
     for box in boxes:
         corners = _box_corners_ego(
@@ -562,19 +591,6 @@ def plot_gt_osz(
                 edge_color = '#e65100'
                 facecolor = '#ff9800'
                 lw = 1.8
-                alpha = 0.45
-        elif cat in PERSON_CATS:
-            if box['in_osz']:
-                base_color = '#ff0000'
-                edge_color = '#ffffff'
-                facecolor = 'none'
-                lw = 1.8
-                alpha = 1.0
-            else:
-                base_color = '#7b1fa2'
-                edge_color = '#4a148c'
-                facecolor = '#7b1fa2'
-                lw = 1.5
                 alpha = 0.45
         else:
             base_color = '#AAAAAA'
@@ -622,10 +638,8 @@ def plot_gt_osz(
                        label=f'PA-relevant OSZ ({osz_pa.sum()} cells)'),
         mpatches.Patch(facecolor='#ff9800', edgecolor='#e65100', alpha=0.55,
                        label='Vehicle (visible) — can cause OSZ'),
-        mpatches.Patch(facecolor='#7b1fa2', edgecolor='#4a148c', alpha=0.55,
-                       label='Person (visible)'),
         plt.Line2D([0],[0], color='#ff0000', lw=2,
-                   label=f'Vehicle/Person in OSZ ({n_phantom}) — phantom candidate'),
+                   label=f'Vehicle in OSZ ({n_phantom}) — phantom candidate'),
         mpatches.Patch(facecolor='#AAAAAA', label='Other object'),
     ]
     ax.legend(handles=legend_items, fontsize=7, loc='upper right', framealpha=0.9)

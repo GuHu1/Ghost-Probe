@@ -90,9 +90,11 @@ def main():
 
     gt_boxes = get_gt_boxes_ego(nusc, sample_token, caster.bev_range)
     for box in gt_boxes:
-        i, j = osz_source.bev_xy_to_ij(box['cx'], box['cy'])
-        nx, ny = osz_pa.shape
-        box['in_osz'] = bool(0 <= i < nx and 0 <= j < ny and osz_pa[i, j])
+        # LiDAR-based occluder check: a vehicle LiDAR has hit cannot be a PA.
+        box['in_osz'], occ_pct, _ = osz_source.is_box_occluded_not_occluder(
+            box['cx'], box['cy'], box['yaw'],
+            (box['width'], box['length'], 0.0), osz_pa, bev_occ)
+        box['occ_overlap'] = occ_pct
 
     vehicle_boxes = [b for b in gt_boxes if b['category'] in VEHICLE_CATS]
     n_phantom = sum(1 for b in vehicle_boxes if b['in_osz'])
@@ -148,7 +150,7 @@ def main():
                                     box['width'], box['yaw'])
         poly_x = list(corners[:, 1]) + [corners[0, 1]]
         poly_y = list(corners[:, 0]) + [corners[0, 0]]
-        color = '#E74C3C' if box['in_osz'] else '#2ECC71'
+        color = '#ff0000' if box['in_osz'] else '#ff9800'
         ax[5].plot(poly_x, poly_y, color=color, linewidth=1.8, alpha=0.9)
     ax[5].plot(0, 0, 'w+', markersize=12, markeredgewidth=2)
     ax[5].set_title(f'GT vehicles vs PA-relevant OSZ  '

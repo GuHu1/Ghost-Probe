@@ -419,3 +419,88 @@ def is_in_osz(x_ego: float, y_ego: float, osz_mask: np.ndarray) -> bool:
     if not (0 <= i < nx and 0 <= j < ny):
         return False
     return bool(osz_mask[i, j] > 0.5)
+
+
+def is_box_occluded_not_occluder(
+    x_ego: float,
+    y_ego: float,
+    heading: float,
+    size: tuple,
+    oz_pa: np.ndarray,           # (nx, ny) bool — PA-relevant OSZ
+    bev_occ: np.ndarray,         # (nx, ny) bool — voxel-cast occluder surface
+) -> Tuple[bool, float, float]:
+    """Check if a vehicle box is genuinely occluded (PA), NOT an occluder.
+
+    Rasterises the box footprint onto the BEV grid. A vehicle is a valid
+    phantom only if:
+      1. ZERO cells of its footprint overlap with bev_occ (LiDAR hit surface).
+      2. ALL cells of its footprint fall inside osz_pa (completely in shadow).
+
+    A vehicle that LiDAR has seen (bev_occ overlap) is the occluder itself,
+    not a phantom — even if its entire box happens to sit inside the OSZ
+    (e.g. a truck whose back half is hit by LiDAR but whose front half is in
+    shadow).
+
+    Returns (is_pa, occ_overlap_pct, osz_overlap_pct) where the two
+    percentages are diagnostic: occ_overlap_pct > 0 means the vehicle was
+    directly sensed and is definitely NOT a phantom.
+    """
+    w, l, _ = size
+    cos_h, sin_h = np.cos(heading), np.sin(heading)
+
+    # --- 4 corners in ego frame ---
+    half_local = np.array([[ l/2,  w/2],
+                            [ l/2, -w/2],
+                            [-l/2, -w/2],
+                            [-l/2,  w/2]], dtype=np.float32)
+    R = np.array([[cos_h, -sin_h], [sin_h,  cos_h]], dtype=np.float32)
+    corners = (R @ half_local.T).T + np.array([x_ego, y_ego], dtype=np.float32)
+
+    # --- Raster bounding box in BEV indices ---
+    caster = get_caster()
+    x_min_g, x_max_g = float(caster.bev_range[0]), float(caster.bev_range[1])
+    y_min_g, y_max_g = float(caster.bev_range[2]), float(caster.bev_range[3])
+    res = caster.bev_res
+    nx, ny = caster.nx, caster.ny
+
+    # BEV index range for AABB (clamped to grid)
+    i_lo = max(0, int(np.floor((corners[:, 0].min() - x_min_g) / res)))
+    i_hi = min(nx - 1, int(np.ceil((corners[:, 0].max() - x_min_g) / res)))
+    j_lo = max(0, int(np.floor((y_max_g - corners[:, 1].max()) / res)))
+    j_hi = min(ny - 1, int(np.ceil((y_max_g - corners[:, 1].min()) / res)))
+
+    # --- Point-in-box test in local frame ---
+    # R^T transforms ego-frame deltas back to local (no translation needed
+    # for distance comparison).
+    Rt = R.T   # (2, 2)
+
+    total_in_aabb = 0
+    in_occ = 0
+    in_osz = 0
+
+    for i in range(i_lo, i_hi + 1):
+        # cell centre ego coords: x_c = x_min_g + (i+0.5)*res
+        x_c = x_min_g + (i + 0.5) * res
+        for j in range(j_lo, j_hi + 1):
+            y_c = y_max_g - (j + 0.5) * res
+
+            # Is (x_c, y_c) inside the rotated box?
+            dx = x_c - x_ego
+            dy = y_c - y_ego
+            lx, ly = Rt[0, 0] * dx + Rt[0, 1] * dy, Rt[1, 0] * dx + Rt[1, 1] * dy
+            if abs(lx) > l / 2 or abs(ly) > w / 2:
+                continue
+
+            total_in_aabb += 1
+            if bev_occ[i, j]:
+                in_occ += 1
+            if oz_pa[i, j] > 0.5:
+                in_osz += 1
+
+    if total_in_aabb == 0:
+        return False, 0.0, 0.0
+
+    occ_pct = in_occ / total_in_aabb
+    osz_pct = in_osz / total_in_aabb
+    is_pa = (in_occ == 0) and (osz_pct >= 0.95)
+    return is_pa, occ_pct, osz_pct

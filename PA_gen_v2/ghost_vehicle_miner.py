@@ -73,6 +73,7 @@ VEHICLE_CATEGORIES = {
     'vehicle.bus.bendy',
     'vehicle.bus.rigid',
     'vehicle.motorcycle',
+    'vehicle.bicycle',
     'vehicle.trailer',
     'vehicle.construction',
     'vehicle.emergency.ambulance',
@@ -118,9 +119,10 @@ def _build_sample_annotations_map(
         if tok not in mapping:
             mapping[tok] = []
         mapping[tok].append({
-            'instance_token':  ann['instance_token'],
+            'instance_token':    ann['instance_token'],
             'translation_global': np.array(ann['translation'], dtype=np.float32),
-            'size':            ann['size'],
+            'rotation_global':    np.array(ann['rotation'], dtype=np.float32),
+            'size':               ann['size'],
         })
 
     total_anns = sum(len(v) for v in mapping.values())
@@ -136,6 +138,14 @@ def _global_to_ego(translation_global: np.ndarray,
     delta = translation_global - ego_translation
     pt_ego = ego_rotation_q.inverse.rotate(delta)
     return pt_ego.astype(np.float32)
+
+
+def _global_heading_to_ego(rotation_global: np.ndarray,
+                           ego_rotation_q: pyquaternion.Quaternion) -> float:
+    """Transform a vehicle's global rotation to its yaw in ego frame."""
+    global_q = pyquaternion.Quaternion(rotation_global.astype(np.float64))
+    rel_q = ego_rotation_q.inverse * global_q
+    return float(rel_q.yaw_pitch_roll[0])
 
 
 def _get_ego_pose(nusc: NuScenes, sample_token: str
@@ -260,9 +270,9 @@ def mine_ghost_events(
             valid_lookback = True
             for lb_tok in lookback_tokens:
                 try:
-                    _, _, osz_pa_lb, _ = osz_source.get_pa_relevant_osz_for_sample(nusc, lb_tok)
+                    bev_occ_lb, _, osz_pa_lb, _ = osz_source.get_pa_relevant_osz_for_sample(nusc, lb_tok)
                     ego_lb, ego_q_lb = _get_ego_pose(nusc, lb_tok)
-                    lookback_data.append((osz_pa_lb, ego_lb, ego_q_lb))
+                    lookback_data.append((osz_pa_lb, bev_occ_lb, ego_lb, ego_q_lb))
                 except Exception as e:
                     tqdm.write(f"  [WARN] OSZ failed for lookback {lb_tok}: {e}")
                     valid_lookback = False
@@ -270,14 +280,14 @@ def mine_ghost_events(
             if not valid_lookback:
                 continue
 
-            # {instance_token: [global_xyz per lookback frame, or None]}
-            inst_lb_presence: Dict[str, List[Optional[np.ndarray]]] = {}
+            # {instance_token: [annotation_dict or None per lookback frame]}
+            inst_lb_presence: Dict[str, List[Optional[Dict]]] = {}
             for lb_idx, lb_tok in enumerate(lookback_tokens):
                 for ann in ann_map.get(lb_tok, []):
                     itok = ann['instance_token']
                     if itok not in inst_lb_presence:
                         inst_lb_presence[itok] = [None] * len(lookback_tokens)
-                    inst_lb_presence[itok][lb_idx] = ann['translation_global']
+                    inst_lb_presence[itok][lb_idx] = ann
 
             # --- Instance loop at frame t ---
             for ann_t in anns_t:
@@ -287,32 +297,44 @@ def mine_ghost_events(
                 if not osz_source.in_bev_range(pt_ego_t[0], pt_ego_t[1]):
                     continue
 
-                if osz_source.is_in_osz(pt_ego_t[0], pt_ego_t[1], osz_pa_t):
-                    continue   # still in OSZ at t — not an emergence
+                # Full box check: the vehicle is a valid PA candidate ONLY if
+                # it is NOT the occluder itself. If any corner of its footprint
+                # peeks outside OSZ, it's partially visible → skip.
+                heading_t = _global_heading_to_ego(
+                    ann_t['rotation_global'], ego_q_t)
+                if osz_source.is_box_occluded_not_occluder(
+                    pt_ego_t[0], pt_ego_t[1], heading_t,
+                    ann_t['size'], osz_pa_t, bev_occ_t)[0]:
+                    continue   # still fully in OSZ, no LiDAR hit — not emergent
 
                 # --- Analyze lookback history of this instance ---
                 lb_positions = inst_lb_presence.get(itok, [None] * lookback_k)
                 traj = traj_map.get(itok, [])
 
                 was_in_osz_per_frame: List[Optional[bool]] = []
-                for lb_idx, lb_xyz_global in enumerate(lb_positions):
-                    osz_pa_lb, ego_lb, ego_q_lb = lookback_data[lb_idx]
+                for lb_idx, lb_ann in enumerate(lb_positions):
+                    osz_pa_lb, bev_occ_lb, ego_lb, ego_q_lb = lookback_data[lb_idx]
                     lb_tok = lookback_tokens[lb_idx]
 
-                    if lb_xyz_global is not None:
-                        # Directly annotated — ground truth, no interpolation.
-                        pt_ego_lb = _global_to_ego(lb_xyz_global, ego_lb, ego_q_lb)
+                    if lb_ann is not None:
+                        # Direct annotation — full box check to exclude occluders.
+                        pt_ego_lb = _global_to_ego(
+                            lb_ann['translation_global'], ego_lb, ego_q_lb)
                         if not osz_source.in_bev_range(pt_ego_lb[0], pt_ego_lb[1]):
                             was_in_osz_per_frame.append(None)
                             continue
+                        heading_lb = _global_heading_to_ego(
+                            lb_ann['rotation_global'], ego_q_lb)
                         was_in_osz_per_frame.append(
-                            osz_source.is_in_osz(pt_ego_lb[0], pt_ego_lb[1], osz_pa_lb))
+                            osz_source.is_box_occluded_not_occluder(
+                                pt_ego_lb[0], pt_ego_lb[1],
+                                heading_lb, lb_ann['size'],
+                                osz_pa_lb, bev_occ_lb)[0])
                         continue
 
-                    # No direct annotation: ask the trajectory whether this
-                    # gap is bracketed (real occlusion) or not (no evidence)
-                    # instead of assuming True — this is the fix for the
-                    # old "unseen = possibly hidden" shortcut.
+                    # No direct annotation: trajectory interpolation.
+                    # Cannot do a full box check (no heading / size here),
+                    # fall back to centre-point check.
                     lb_timestamp = nusc.get('sample', lb_tok)['timestamp']
                     status, xyz_interp = locate_at_time(traj, lb_timestamp)
 
