@@ -56,8 +56,8 @@ NUSCENES_CAMERAS = [
 
 
 def densify_depth_map(depth_map: np.ndarray,
-                      max_radius: int = 8,
-                      depth_discontinuity_thresh: float = 1.5) -> np.ndarray:
+                      max_radius: int = 16,
+                      depth_discontinuity_thresh: float = 4.0) -> np.ndarray:
     """
     Fill sparse depth map with nearest-neighbour interpolation while
     preserving depth discontinuities.
@@ -72,6 +72,11 @@ def densify_depth_map(depth_map: np.ndarray,
     neighbours. If their depths differ by more than
     depth_discontinuity_thresh, the pixel sits on a depth edge and is left
     unknown (0). Otherwise the closest neighbour's depth is used.
+
+    Parameters tuned per OSZ_ERROR_AUDIT.md P0:
+      max_radius increased 8→16 to fill larger object interiors.
+      depth_discontinuity_thresh increased 1.5→4.0 to reduce edge gaps
+      that caused fragmented BEV occupancy.
     """
     H, W = depth_map.shape
     valid = depth_map > 0
@@ -138,7 +143,112 @@ def _get_intrinsic(nusc, cam_token: str) -> np.ndarray:
     return K
 
 
+def filter_ground_points(pts_ego: np.ndarray,
+                         z_thresh: float = 0.2) -> np.ndarray:
+    """Remove points at or below ground level.
+
+    Ground points projected to camera depth maps create false obstacle
+    voxels (the ground at 15m has the same depth as a 0.4m-tall obstacle
+    at 15m). Filtering them BEFORE projection eliminates the largest
+    source of phantom OSZ on the road surface.
+
+    Args:
+        pts_ego: (N, 3) LiDAR points in ego frame (x=fwd, y=left, z=up).
+        z_thresh: points with z_ego < z_thresh are ground and removed.
+
+    Returns:
+        (M, 3) filtered points with z_ego >= z_thresh.
+    """
+    return pts_ego[pts_ego[:, 2] >= z_thresh]
+
+
+def _ego_pose_tf(nusc, sample_token: str):
+    """Build ego→global 4×4 transform from the LiDAR sample_data's ego_pose."""
+    sample = nusc.get('sample', sample_token)
+    lidar_sd = nusc.get('sample_data', sample['data']['LIDAR_TOP'])
+    ep = nusc.get('ego_pose', lidar_sd['ego_pose_token'])
+    T = transform_matrix(ep['translation'], Quaternion(ep['rotation']), inverse=False)
+    return T.astype(np.float64)
+
+
+def aggregate_lidar_sweeps(nusc, sample_token: str,
+                           n_sweeps: int = 3,
+                           ground_z_thresh: float = 0.2) -> np.ndarray:
+    """Aggregate current + historical LiDAR sweeps into one ego-frame point cloud.
+
+    Loads the keyframe LiDAR sweep plus up to n_sweeps previous sweeps (via
+    sample_data['prev'] chain — past only, never future). Each historical
+    sweep's points are ego-motion-compensated (past_ego → global → current_ego)
+    and ground-filtered before being concatenated.
+
+    This bypasses the depth-map pipeline entirely: the caller can voxelize
+    the returned points directly in 3D, eliminating densify/voxel-cast errors.
+
+    Args:
+        nusc: NuScenes instance.
+        sample_token: keyframe sample token (the 'current' frame).
+        n_sweeps: how many PAST sweeps to include (0 = keyframe only).
+        ground_z_thresh: z_ego cutoff for ground removal (metres).
+
+    Returns:
+        (M, 3) float32 array — all points in CURRENT ego frame, ground removed.
+    """
+    sample = nusc.get('sample', sample_token)
+    lidar_tok = sample['data']['LIDAR_TOP']
+    lidar_sd = nusc.get('sample_data', lidar_tok)
+
+    # Current ego → global
+    T_cur_ego2global = _ego_pose_tf(nusc, sample_token)
+
+    all_pts = []
+
+    # ── Current keyframe sweep ────────────────────────────────────────
+    pc = LidarPointCloud.from_file(nusc.dataroot + '/' + lidar_sd['filename'])
+    T_l2e = _get_transform(nusc, lidar_sd)
+    pts_h = np.concatenate([pc.points[:3].T, np.ones((pc.points.shape[1], 1))], axis=1)
+    pts_ego = (T_l2e @ pts_h.T).T[:, :3]
+    pts_ego = filter_ground_points(pts_ego, ground_z_thresh)
+    all_pts.append(pts_ego.astype(np.float32))
+
+    # ── Historical sweeps (prev chain, past-only) ─────────────────────
+    tok = lidar_sd['prev']
+    for _ in range(n_sweeps):
+        if not tok:
+            break
+        sd = nusc.get('sample_data', tok)
+
+        # Load past sweep points → past ego frame
+        pc_p = LidarPointCloud.from_file(nusc.dataroot + '/' + sd['filename'])
+        T_l2e_p = _get_transform(nusc, sd)
+        pts_p_h = np.concatenate([pc_p.points[:3].T,
+                                  np.ones((pc_p.points.shape[1], 1))], axis=1)
+        pts_p_ego = (T_l2e_p @ pts_p_h.T).T[:, :3]
+
+        # Ground filter BEFORE motion compensation (z in past ego frame)
+        pts_p_ego = filter_ground_points(pts_p_ego, ground_z_thresh)
+        if len(pts_p_ego) == 0:
+            tok = sd['prev']
+            continue
+
+        # Ego-motion compensation: past_ego → global → current_ego
+        T_past_ego2global = _ego_pose_tf(nusc, sd['token'])
+        pts_global_h = (T_past_ego2global @
+                        np.concatenate([pts_p_ego,
+                                        np.ones((len(pts_p_ego), 1))], axis=1).T).T
+        pts_cur_ego_h = (np.linalg.inv(T_cur_ego2global) @ pts_global_h.T).T
+        pts_cur_ego = pts_cur_ego_h[:, :3].astype(np.float32)
+
+        all_pts.append(pts_cur_ego)
+
+        tok = sd['prev']
+
+    print(f"  [aggregate] {len(all_pts)} sweeps, "
+          f"{sum(len(p) for p in all_pts)} points total")
+    return np.concatenate(all_pts, axis=0)
+
+
 def project_lidar_to_camera(
+
     points_ego: np.ndarray,   # (N, 3) LiDAR points in ego frame
     K: np.ndarray,             # (3, 3)
     T_cam2ego: np.ndarray,     # (4, 4)
@@ -259,6 +369,10 @@ class NuScenesOSZLoader:
             [pc.points[:3].T, np.ones((pc.points.shape[1], 1))], axis=1
         )
         pts_ego = (T_lidar2ego @ pts_h.T).T[:, :3]  # (N, 3) ego frame
+
+        # Ground point filtering (P1 fix): ground points create false
+        # obstacle voxels on the road surface. Remove before projection.
+        pts_ego = filter_ground_points(pts_ego)
 
         # ── Per-camera ────────────────────────────────────────────────
         for cam_name in self.cameras:

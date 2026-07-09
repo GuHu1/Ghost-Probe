@@ -264,7 +264,7 @@ class RayCaster3D:
                 to one BEV cell's diagonal.
         """
         if surface_tolerance is None:
-            surface_tolerance = max(self.bev_res, self.z_res) * 1.5
+            surface_tolerance = max(self.bev_res, self.z_res) * 3.0
 
         H, W = depth_map.shape
         K = intrinsic
@@ -286,8 +286,8 @@ class RayCaster3D:
         # ── Project to image plane ────────────────────────────────────────────
         uvw = (K @ pts_cam_v.T).T            # (M, 3)
         z_cam = uvw[:, 2]
-        u = (uvw[:, 0] / z_cam).astype(np.int32)
-        v = (uvw[:, 1] / z_cam).astype(np.int32)
+        u = np.rint(uvw[:, 0] / z_cam).astype(np.int32)
+        v = np.rint(uvw[:, 1] / z_cam).astype(np.int32)
 
         # Keep only projections inside image
         in_image = (u >= 0) & (u < W) & (v >= 0) & (v < H)
@@ -320,3 +320,85 @@ def voxel_to_bev_maxpool(V_occ: np.ndarray) -> np.ndarray:
     Output: (nx, ny) bool  — M_occ^c
     """
     return V_occ.any(axis=2)
+
+
+# ════════════════════════════════════════════════════════════════════
+# Alternative BEV occupancy path: direct pointcloud voxelization.
+# Bypasses the depth-map → densify → voxel-cast chain entirely.
+# Use when you have a (possibly multi-frame aggregated) ego-frame point
+# cloud and want BEV occupancy without going through camera projection.
+# ════════════════════════════════════════════════════════════════════
+
+def build_bev_occ_from_pointcloud(
+    pts_ego: np.ndarray,
+    caster: "RayCaster3D",
+    min_points: int = 1,
+    do_closing: bool = True,
+) -> np.ndarray:
+    """Build a solid BEV obstacle map by direct 3D voxelization of a point cloud.
+
+    Each LiDAR point is assigned to a 3D voxel. A voxel with >= min_points
+    points is marked occupied. Z-axis max-pool gives BEV occupancy.
+
+    This eliminates all depth-map-related errors (densify artifacts,
+    surface_tolerance mismatch, projection truncation, camera FOV seams).
+    Ground points should already be filtered by the caller.
+
+    Args:
+        pts_ego: (N, 3) float32 — points in current ego frame, ground-filtered.
+        caster: RayCaster3D providing nx, ny, nz, bev_range, z_min, etc.
+        min_points: minimum points per voxel to count as occupied.
+        do_closing: if True, apply binary_closing to fill small holes.
+
+    Returns:
+        bev_occ: (nx, ny) bool — solid BEV obstacle map.
+    """
+    nx, ny, nz = caster.nx, caster.ny, caster.nz
+    x_min, x_max, y_min, y_max = caster.bev_range
+
+    # Voxelize: floor each point into a 3D grid cell
+    xi = np.floor((pts_ego[:, 0] - x_min) / caster.bev_res).astype(np.int32)
+    yi = np.floor((pts_ego[:, 1] - y_min) / caster.bev_res).astype(np.int32)
+    zi = np.floor((pts_ego[:, 2] - caster.z_min) / caster.z_res).astype(np.int32)
+
+    in_grid = ((xi >= 0) & (xi < nx) &
+               (yi >= 0) & (yi < ny) &
+               (zi >= 0) & (zi < nz))
+    xi, yi, zi = xi[in_grid], yi[in_grid], zi[in_grid]
+
+    # Count points per voxel via flat index
+    flat_idx = xi * (ny * nz) + yi * nz + zi
+    counts = np.bincount(flat_idx, minlength=nx * ny * nz)
+    V_occ = counts.reshape(nx, ny, nz) >= min_points
+
+    # Max-pool Z → BEV
+    bev_occ = V_occ.any(axis=2)
+
+    # Morphological closing fills gaps from sparse points or voxel aliasing
+    if do_closing:
+        try:
+            from scipy.ndimage import binary_closing
+            bev_occ = binary_closing(bev_occ, iterations=2)
+        except ImportError:
+            pass  # scipy not available; return raw
+
+    return bev_occ
+
+
+def compute_osz_from_pointcloud(
+    pts_ego: np.ndarray,
+    caster: "RayCaster3D",
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Full OSZ from a point cloud: voxelize → BEV occ → 2D ray cast.
+
+    Use this instead of compute_osz_from_ego_raycasting when you have a
+    pre-aggregated, ground-filtered point cloud (e.g. from
+    aggregate_lidar_sweeps) and want to skip the depth-map pipeline.
+
+    Returns:
+        osz_mask : (nx, ny) bool — ego-centric occlusion shadow zone
+        bev_occ  : (nx, ny) bool — solid BEV obstacle map
+    """
+    bev_occ  = build_bev_occ_from_pointcloud(pts_ego, caster)
+    osz_mask = cast_osz_2d(bev_occ, caster)
+    return osz_mask, bev_occ

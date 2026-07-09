@@ -58,9 +58,14 @@ from common.bev_config import BEV_RANGE_XYXY, BEV_RESOLUTION_M
 from OSZ.modules.ray_casting import (
     RayCaster3D,
     build_bev_occ_from_voxel_cast,
+    build_bev_occ_from_pointcloud,
     cast_osz_2d,
+    compute_osz_from_pointcloud,
 )
-from OSZ.utils.nuscenes_loader import NuScenesOSZLoader, NUSCENES_CAMERAS
+from OSZ.utils.nuscenes_loader import (
+    NuScenesOSZLoader, NUSCENES_CAMERAS,
+    aggregate_lidar_sweeps,
+)
 
 # OSZ/modules/drivable_filter.py imports shapely unconditionally at its
 # top level (only the nuScenes-map half of that file guards its own
@@ -87,14 +92,18 @@ except ImportError as _e:
           f"Install shapely to enable it.")
 
 
-# Height gate for the 3D voxel-cast stage. Not part of the shared BEV grid
-# knob (common/bev_config.py) since it's a different axis (vertical, not
-# the ground-plane cell size) — kept here as an explicit, visible constant
-# rather than a buried default, matching OSZ/run_osz_pipeline.py's CLI
-# defaults so PA_gen_v2/ and OSZ/ agree on what counts as "vehicle body".
-Z_MIN = 0.3
-Z_MAX = 2.2
+# Height gate for the 3D voxel-cast stage. Widened per OSZ_ERROR_AUDIT.md P1:
+# z_min lowered to 0.1 to catch curbs/low barriers; z_max raised to 4.5 to
+# catch trucks/buses that were previously invisible (no OSZ cast by them).
+Z_MIN = 0.1
+Z_MAX = 4.5
 Z_RES = 0.3
+
+# Multi-frame LiDAR sweep aggregation (per OSZ_ERROR_AUDIT.md P2):
+# N_SWEEPS=3 adds 3 historical sweeps (past-only, ~0.15s lookback),
+# boosting point density ~3x for the direct-voxelization path.
+# Set to 0 to use the old single-frame depth-map path instead.
+N_SWEEPS = 3
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -174,8 +183,8 @@ _warned_map_unavailable = False   # print the "no map" warning once, not per-sam
 import hashlib as _hashlib
 
 def _disk_cache_dir() -> Path:
-    """Config-keyed cache dir; changes when BEV grid or Z-gate changes."""
-    cfg = f"{BEV_RANGE_XYXY}_{BEV_RESOLUTION_M}_{Z_MIN}_{Z_MAX}_{Z_RES}"
+    """Config-keyed cache dir; changes when BEV grid, Z-gate, or N_SWEEPS changes."""
+    cfg = f"{BEV_RANGE_XYXY}_{BEV_RESOLUTION_M}_{Z_MIN}_{Z_MAX}_{Z_RES}_{N_SWEEPS}"
     h = _hashlib.md5(cfg.encode()).hexdigest()[:8]
     return _REPO_ROOT / 'PA_gen_v2' / 'output' / 'osz_cache' / h
 
@@ -227,19 +236,28 @@ def get_osz_for_sample(nusc, sample_token: str) -> Tuple[np.ndarray, np.ndarray]
     if sample_token in _cache:
         return _cache[sample_token]
 
-    loader = _get_loader(nusc)
-    frame = loader.build_frame_for_token(sample_token)
-    cams = frame['cameras']
-    if not cams:
-        raise RuntimeError(
-            f"No camera data for sample {sample_token}. Check that "
-            f"--dataroot points at a real nuScenes root containing "
-            f"samples/sweeps for this version, not just the metadata "
-            f"tables."
-        )
-
     caster = get_caster()
-    bev_occ = build_bev_occ_from_voxel_cast(cams, caster)
+
+    if N_SWEEPS > 0:
+        # Multi-frame pointcloud path: aggregate historical sweeps,
+        # ground-filter, direct voxelization. Bypasses depth-map/densify/
+        # voxel-cast — eliminates errors ①②③④⑥⑦⑧⑨ (see OSZ_ERROR_AUDIT.md).
+        pts_ego = aggregate_lidar_sweeps(nusc, sample_token, n_sweeps=N_SWEEPS)
+        bev_occ = build_bev_occ_from_pointcloud(pts_ego, caster)
+    else:
+        # Legacy single-frame depth-map path (fallback when N_SWEEPS=0).
+        loader = _get_loader(nusc)
+        frame = loader.build_frame_for_token(sample_token)
+        cams = frame['cameras']
+        if not cams:
+            raise RuntimeError(
+                f"No camera data for sample {sample_token}. Check that "
+                f"--dataroot points at a real nuScenes root containing "
+                f"samples/sweeps for this version, not just the metadata "
+                f"tables."
+            )
+        bev_occ = build_bev_occ_from_voxel_cast(cams, caster)
+
     osz_mask = cast_osz_2d(bev_occ, caster).astype(np.float32)
 
     _cache[sample_token] = (bev_occ, osz_mask)
@@ -320,7 +338,7 @@ def get_pa_relevant_osz_for_sample(
         _pa_cache[sample_token] = result
         return result
 
-    # 3) compute from scratch (slow path)
+    # 3) compute from scratch
     bev_occ, osz_raw = get_osz_for_sample(nusc, sample_token)
     drivable_mask = get_drivable_mask_for_sample(nusc, sample_token)
 
