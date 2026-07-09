@@ -550,30 +550,47 @@ def plot_gt_osz(
         cat = box['category']
         if cat in VEHICLE_CATS:
             if box['in_osz']:
-                # phantom vehicle: vivid red with black outline so it pops on black OSZ
+                # phantom vehicle: red outline + white edge, no fill
                 base_color = '#ff0000'
                 edge_color = '#ffffff'
+                facecolor = 'none'
                 lw = 2.2
+                alpha = 1.0
             else:
+                # visible vehicle: filled orange so it clearly shows as an occluder
                 base_color = '#ff9800'
                 edge_color = '#e65100'
-                lw = 2.0
+                facecolor = '#ff9800'
+                lw = 1.8
+                alpha = 0.45
         elif cat in PERSON_CATS:
             if box['in_osz']:
                 base_color = '#ff0000'
                 edge_color = '#ffffff'
+                facecolor = 'none'
                 lw = 1.8
+                alpha = 1.0
             else:
                 base_color = '#7b1fa2'
                 edge_color = '#4a148c'
+                facecolor = '#7b1fa2'
                 lw = 1.5
+                alpha = 0.45
         else:
             base_color = '#AAAAAA'
             edge_color = '#666666'
+            facecolor = 'none'
             lw = 1.0
+            alpha = 0.9
 
-        ax.plot(poly_ax_x, poly_ax_y, color=edge_color, linewidth=lw + 0.6)
-        ax.plot(poly_ax_x, poly_ax_y, color=base_color, linewidth=lw, alpha=0.95)
+        # Fill visible vehicles so they pop as occluders; PA stays outline-only
+        if facecolor != 'none':
+            ax.fill(poly_ax_x, poly_ax_y, facecolor=facecolor, alpha=alpha,
+                    edgecolor='none', zorder=4)
+        ax.plot(poly_ax_x, poly_ax_y, color=edge_color, linewidth=lw + 0.6,
+                zorder=5)
+        ax.plot(poly_ax_x, poly_ax_y, color=base_color, linewidth=lw,
+                alpha=alpha if facecolor == 'none' else 0.95, zorder=5)
 
         # Forward arrow
         cos_h, sin_h = np.cos(box['yaw']), np.sin(box['yaw'])
@@ -600,11 +617,13 @@ def plot_gt_osz(
     legend_items = [
         mpatches.Patch(facecolor=_OSZ_PALETTE['road'], label='Road'),
         mpatches.Patch(facecolor=_OSZ_PALETTE['grass'], label='Non-drivable ground'),
-        mpatches.Patch(facecolor=_OSZ_PALETTE['obstacle'], label='Occluder'),
+        mpatches.Patch(facecolor=_OSZ_PALETTE['obstacle'], label='Occluder (LiDAR/depth)'),
         mpatches.Patch(facecolor=_OSZ_PALETTE['osz'],
                        label=f'PA-relevant OSZ ({osz_pa.sum()} cells)'),
-        plt.Line2D([0],[0], color='#ff9800', lw=2, label='Vehicle (visible)'),
-        plt.Line2D([0],[0], color='#7b1fa2', lw=2, label='Person (visible)'),
+        mpatches.Patch(facecolor='#ff9800', edgecolor='#e65100', alpha=0.55,
+                       label='Vehicle (visible) — can cause OSZ'),
+        mpatches.Patch(facecolor='#7b1fa2', edgecolor='#4a148c', alpha=0.55,
+                       label='Person (visible)'),
         plt.Line2D([0],[0], color='#ff0000', lw=2,
                    label=f'Vehicle/Person in OSZ ({n_phantom}) — phantom candidate'),
         mpatches.Patch(facecolor='#AAAAAA', label='Other object'),
