@@ -272,7 +272,11 @@ def mine_ghost_events(
                 try:
                     bev_occ_lb, _, osz_pa_lb, _ = osz_source.get_pa_relevant_osz_for_sample(nusc, lb_tok)
                     ego_lb, ego_q_lb = _get_ego_pose(nusc, lb_tok)
-                    lookback_data.append((osz_pa_lb, bev_occ_lb, ego_lb, ego_q_lb))
+                    # Degenerate frames (e.g. near-ego artifact short-circuiting
+                    # the whole grid) are structurally uninformative — treat as
+                    # NO_EVIDENCE rather than confirmed-occluded.
+                    is_degenerate_lb = osz_source.is_frame_degenerate(nusc, lb_tok)
+                    lookback_data.append((osz_pa_lb, bev_occ_lb, ego_lb, ego_q_lb, is_degenerate_lb))
                 except Exception as e:
                     tqdm.write(f"  [WARN] OSZ failed for lookback {lb_tok}: {e}")
                     valid_lookback = False
@@ -313,8 +317,12 @@ def mine_ghost_events(
 
                 was_in_osz_per_frame: List[Optional[bool]] = []
                 for lb_idx, lb_ann in enumerate(lb_positions):
-                    osz_pa_lb, bev_occ_lb, ego_lb, ego_q_lb = lookback_data[lb_idx]
+                    osz_pa_lb, bev_occ_lb, ego_lb, ego_q_lb, is_degenerate_lb = lookback_data[lb_idx]
                     lb_tok = lookback_tokens[lb_idx]
+
+                    if is_degenerate_lb:
+                        was_in_osz_per_frame.append(None)
+                        continue
 
                     if lb_ann is not None:
                         # Direct annotation — full box check to exclude occluders.

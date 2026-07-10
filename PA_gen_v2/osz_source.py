@@ -105,6 +105,21 @@ Z_RES = 0.3
 # Set to 0 to use the old single-frame depth-map path instead.
 N_SWEEPS = 3
 
+# Near-ego artifact suppression (per OSZ_ERROR_AUDIT.md cause B).
+# cast_osz_2d() marks every cell AFTER a ray's first hit as OSZ.  Spurious
+# occupancy within ~1-2m of ego — ego self-reflection, multi-sweep ego-motion
+# compensation residue, or calibration noise — therefore short-circuits the
+# whole grid and paints everything as shadow.  We explicitly clear bev_occ
+# inside a disc around ego before ray casting.
+EGO_CLEARANCE_RADIUS_M = 2.2   # covers ego footprint + small margin
+
+# Frame-quality gate thresholds for is_frame_degenerate().  These are
+# intentionally conservative: a frame is rejected as evidence only when it
+# is structurally uninformative (raw OSZ saturates the whole grid AND the
+# near-ego ring is the cause).
+DEGENERATE_RAW_THRESHOLD = 0.95
+DEGENERATE_RING_THRESHOLD = 0.50
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Shared RayCaster3D instance
@@ -128,6 +143,28 @@ def get_caster() -> RayCaster3D:
         print(f"[osz_source] RayCaster3D grid: {_caster.nx}x{_caster.ny}x{_caster.nz} "
               f"@ {BEV_RESOLUTION_M}m/cell (range={BEV_RANGE_XYXY})")
     return _caster
+
+
+def _clear_ego_footprint(bev_occ: np.ndarray, caster: RayCaster3D,
+                         radius_m: float = EGO_CLEARANCE_RADIUS_M) -> np.ndarray:
+    """
+    Zero-out bev_occ cells whose centre lies within `radius_m` of ego origin.
+
+    This is the geometry-level fix for the near-ego artifact (cause B) that
+    the diagnostic script attributes 100% of raw-saturated frames to.  Any
+    spurious occluder at/near ego otherwise short-circuits cast_osz_2d() and
+    shadows the entire grid.
+    """
+    nx, ny = caster.nx, caster.ny
+    x_min, x_max, y_min, y_max = caster.bev_range
+    res = caster.bev_res
+
+    # Build coordinate grids (ego-centric, same convention as RayCaster3D)
+    xs = np.linspace(x_min + res / 2, x_max - res / 2, nx)
+    ys = np.linspace(y_max - res / 2, y_min + res / 2, ny)
+    xx, yy = np.meshgrid(xs, ys, indexing='ij')
+    in_disc = (xx ** 2 + yy ** 2) <= radius_m ** 2
+    return bev_occ & ~in_disc
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -183,8 +220,10 @@ _warned_map_unavailable = False   # print the "no map" warning once, not per-sam
 import hashlib as _hashlib
 
 def _disk_cache_dir() -> Path:
-    """Config-keyed cache dir; changes when BEV grid, Z-gate, or N_SWEEPS changes."""
-    cfg = f"{BEV_RANGE_XYXY}_{BEV_RESOLUTION_M}_{Z_MIN}_{Z_MAX}_{Z_RES}_{N_SWEEPS}_yflip_fixed"
+    """Config-keyed cache dir; changes when BEV grid, Z-gate, N_SWEEPS or
+    ego-clearance radius changes so stale geometric results are not reused."""
+    cfg = (f"{BEV_RANGE_XYXY}_{BEV_RESOLUTION_M}_{Z_MIN}_{Z_MAX}_{Z_RES}_"
+           f"{N_SWEEPS}_{EGO_CLEARANCE_RADIUS_M}_yflip_fixed")
     h = _hashlib.md5(cfg.encode()).hexdigest()[:8]
     return _REPO_ROOT / 'PA_gen_v2' / 'output' / 'osz_cache' / h
 
@@ -257,6 +296,11 @@ def get_osz_for_sample(nusc, sample_token: str) -> Tuple[np.ndarray, np.ndarray]
                 f"tables."
             )
         bev_occ = build_bev_occ_from_voxel_cast(cams, caster)
+
+    # Suppress near-ego artifact before ray casting.  Without this, any
+    # spurious occupancy within ~1-2m of ego short-circuits every ray and
+    # marks the whole BEV grid as shadow (see OSZ_ERROR_AUDIT.md cause B).
+    bev_occ = _clear_ego_footprint(bev_occ, caster)
 
     osz_mask = cast_osz_2d(bev_occ, caster).astype(np.float32)
 
@@ -404,6 +448,48 @@ def drivable_filter_available() -> bool:
     freely rename/restructure that internal state later.
     """
     return _DRIVABLE_FILTER_IMPORTABLE
+
+
+def _near_ego_ring_fraction(bev_occ: np.ndarray, radius_m: float,
+                            n_angles: int = 72) -> float:
+    """
+    Fraction of angular directions around ego that hit bev_occ within
+    `radius_m`.  Helper shared with the diagnostic script's logic.
+    """
+    nx, ny = bev_occ.shape
+    angles = np.linspace(0, 2 * np.pi, n_angles, endpoint=False)
+    radii = np.linspace(0.3, radius_m, 8)
+    hits = 0
+    for theta in angles:
+        cos_t, sin_t = np.cos(theta), np.sin(theta)
+        hit = False
+        for r in radii:
+            i, j = bev_xy_to_ij(r * cos_t, r * sin_t)
+            if 0 <= i < nx and 0 <= j < ny and bev_occ[i, j]:
+                hit = True
+                break
+        hits += hit
+    return hits / n_angles
+
+
+def is_frame_degenerate(nusc, sample_token: str) -> bool:
+    """
+    Frame-quality gate.  Returns True if this frame's OSZ is structurally
+    uninformative and should NOT be used as confirmed-occlusion evidence.
+
+    A frame is degenerate when:
+      - raw OSZ covers >= DEGENERATE_RAW_THRESHOLD of the grid, AND
+      - a near-ego occluder ring is present (the known cause B fingerprint).
+
+    Frames that fail this gate should be treated as NO_EVIDENCE by the
+    ghost-vehicle miner, regardless of what the raw geometry says.
+    """
+    bev_occ, osz_raw = get_osz_for_sample(nusc, sample_token)
+    raw_pct = float((osz_raw > 0.5).mean())
+    if raw_pct < DEGENERATE_RAW_THRESHOLD:
+        return False
+    ring_frac = _near_ego_ring_fraction(bev_occ, EGO_CLEARANCE_RADIUS_M)
+    return ring_frac >= DEGENERATE_RING_THRESHOLD
 
 
 def is_in_osz(x_ego: float, y_ego: float, osz_mask: np.ndarray) -> bool:

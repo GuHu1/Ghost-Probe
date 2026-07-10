@@ -81,6 +81,13 @@ import matplotlib.patheffects as pe
 from matplotlib.colors import ListedColormap
 
 try:
+    from PIL import Image, ImageDraw, ImageFont
+    _PIL_AVAILABLE = True
+except ImportError:
+    Image = ImageDraw = ImageFont = None
+    _PIL_AVAILABLE = False
+
+try:
     from scipy.ndimage import binary_dilation
     _SCIPY_AVAILABLE = True
 except ImportError:
@@ -1411,6 +1418,7 @@ _GALLERY_HTML = """<!doctype html>
   button{background:#2a2f3a;color:#ddd;border:1px solid #444;border-radius:4px;
     padding:4px 12px;cursor:pointer}
   button:hover{background:#353b48}
+  button.active{background:#7c3aed;color:#fff;border-color:#7c3aed}
   input{width:74px;background:#0d0f13;color:#ddd;border:1px solid #444;
     border-radius:4px;padding:3px 6px}
   #wrap{flex:1;display:flex;align-items:center;justify-content:center;
@@ -1426,19 +1434,34 @@ _GALLERY_HTML = """<!doctype html>
     <span class="hint">&#8593;/&#8595; or j/k = &plusmn;10</span>
     <span>goto <input id="jump" type="number" min="1" value="1">
       <button onclick="jumpTo()">Go</button></span>
+    <span class="hint">|</span>
+    <button id="btn_bev" class="active" onclick="setMode('bev')">BEV</button>
+    <button id="btn_cam" onclick="setMode('cam')">&#x1F4F7; Multi-View</button>
     <span id="cap" class="cap"></span>
   </div>
   <div id="wrap"><img id="view" src="" alt="event"></div>
 <script>
 const data = __DATA__;
 let i = 0;
+let mode = 'bev';
 function show(){
-  document.getElementById('view').src = data[i].f;
+  const e = data[i];
+  if(mode==='cam' && e.m){
+    document.getElementById('view').src = e.m;
+    document.getElementById('btn_cam').classList.add('active');
+    document.getElementById('btn_bev').classList.remove('active');
+  } else {
+    if(mode==='cam' && !e.m) mode='bev';
+    document.getElementById('view').src = e.f;
+    document.getElementById('btn_bev').classList.add('active');
+    document.getElementById('btn_cam').classList.remove('active');
+  }
   document.getElementById('counter').textContent = (i+1)+' / '+data.length;
-  document.getElementById('cap').textContent = data[i].c;
+  document.getElementById('cap').textContent = e.c + (mode==='cam'?' [CAM]':' [BEV]');
   document.getElementById('jump').value = i+1;
   document.title = 'Event '+(i+1)+' / '+data.length;
 }
+function setMode(m){ mode=m; show(); }
 function go(d){ i=Math.max(0,Math.min(data.length-1,i+d)); show(); }
 function jumpTo(){
   const v=parseInt(document.getElementById('jump').value,10);
@@ -1449,6 +1472,7 @@ document.addEventListener('keydown', e=>{
   else if(e.key==='ArrowLeft'||e.key==='ArrowUp') go(-1);
   else if(e.key==='j') go(10);
   else if(e.key==='k') go(-10);
+  else if(e.key==='m') setMode(mode==='bev'?'cam':'bev');
   else if(e.key==='q') window.close();
 });
 show();
@@ -1459,13 +1483,172 @@ show();
 
 
 def _write_gallery_html(out_dir: str, names: List[str],
-                        captions: List[str]) -> None:
-    """Write index.html with an embedded JSON array of {file, caption}."""
-    items = [{"f": n, "c": c} for n, c in zip(names, captions)]
+                        captions: List[str], mv_names: List[str] = None) -> None:
+    """Write index.html with an embedded JSON array of {file, multiview, caption}."""
+    mv_names = mv_names or [''] * len(names)
+    items = [{"f": n, "m": m, "c": c}
+             for n, m, c in zip(names, mv_names, captions)]
     data_js = json.dumps(items, ensure_ascii=False)
     html = _GALLERY_HTML.replace("__DATA__", data_js).replace(
         "__N__", str(len(names)))
     Path(out_dir, "index.html").write_text(html, encoding="utf-8")
+
+
+# ════════════════════════════════════════════════════════════════════
+# MULTI-VIEW CAMERA RENDERER
+# ════════════════════════════════════════════════════════════════════
+
+_NUSCENES_CAM_ORDER = [
+    'CAM_FRONT_LEFT', 'CAM_FRONT', 'CAM_FRONT_RIGHT',
+    'CAM_BACK_LEFT', 'CAM_BACK', 'CAM_BACK_RIGHT',
+]
+_CAM_DISPLAY_NAMES = ['FL', 'FRONT', 'FR', 'BL', 'BACK', 'BR']
+
+
+def render_multiview_for_event(nusc: NuScenes, event: Dict,
+                               thumb_w: int = 266, thumb_h: int = 150) -> Optional[object]:
+    """
+    Render a multi-view camera grid for all frames of one event.
+
+    Layout: 1 header row (camera names) + up to 5 frame rows (t-4..t),
+           6 camera columns, plus a verdict-coloured label column on the left.
+
+    Frame row border colour matches the miner's verdict:
+      magenta = emerged (t), red = in OSZ, blue = visible, gray = no evidence.
+
+    Returns PIL Image, or None if PIL is unavailable or no camera images loaded.
+    """
+    if not _PIL_AVAILABLE:
+        return None
+
+    lb_tokens = event['lookback_tokens']
+    was_in_osz = event['was_in_osz']
+    emerge_tok = event['emerge_sample']
+    k = len(lb_tokens)
+
+    verdict_colors = {
+        True: (220, 38, 38),       # red — in OSZ
+        False: (37, 99, 235),      # blue — visible
+        None: (107, 114, 128),     # gray — no evidence
+        'emerged': (255, 0, 255),  # magenta — emerged
+    }
+
+    # Collect frames: t_k ..., t_1, t (emerged)
+    frames = []
+    for i in range(k):
+        label = f't-{k - i - 1}' if i < k else f't-?'
+        verdict = was_in_osz[i] if i < len(was_in_osz) else None
+        frames.append((lb_tokens[i] if i < len(lb_tokens) else None,
+                       label, verdict))
+    frames.append((emerge_tok, 't', 'emerged'))
+
+    # Load camera images for each frame
+    row_images = []  # list of (pil_image, label, verdict_color) or None
+    for tok, label, verdict in frames:
+        if tok is None:
+            row_images.append(None)
+            continue
+        try:
+            sample = nusc.get('sample', tok)
+        except Exception:
+            row_images.append(None)
+            continue
+
+        cam_row = []
+        for cam_name in _NUSCENES_CAM_ORDER:
+            try:
+                cam_tok = sample['data'].get(cam_name)
+                if cam_tok is None:
+                    cam_row.append(None)
+                    continue
+                sd = nusc.get('sample_data', cam_tok)
+                path = nusc.dataroot + '/' + sd['filename']
+                img = Image.open(path).convert('RGB')
+                img = img.resize((thumb_w, thumb_h), Image.LANCZOS)
+                cam_row.append(img)
+            except Exception:
+                cam_row.append(None)
+
+        # If no camera images loaded at all, skip this row
+        if all(x is None for x in cam_row):
+            row_images.append(None)
+            continue
+
+        row_images.append((cam_row, label,
+                           verdict_colors.get(verdict, (107, 114, 128))))
+
+    # Filter out rows with no images
+    valid_rows = [(cam_row, label, col) for r in row_images
+                  if r is not None for cam_row, label, col in [r]]
+
+    if not valid_rows:
+        return None
+
+    # Dimensions
+    label_w = 70
+    gap = 2
+    total_w = label_w + 6 * thumb_w + 5 * gap
+    header_h = 24
+    total_h = header_h + len(valid_rows) * (thumb_h + gap) + 10
+
+    canvas = Image.new('RGB', (total_w, total_h), (17, 20, 26))  # dark bg
+    draw = ImageDraw.Draw(canvas)
+    try:
+        font = ImageFont.load_default()
+    except Exception:
+        font = None
+
+    # Header: camera names
+    for ci, name in enumerate(_CAM_DISPLAY_NAMES):
+        x = label_w + ci * (thumb_w + gap) + thumb_w // 2
+        y = 4
+        if font:
+            bbox = draw.textbbox((0, 0), name, font=font)
+            tw = bbox[2] - bbox[0]
+            draw.text((x - tw // 2, y), name, fill=(180, 185, 195), font=font)
+        else:
+            draw.text((x - 10, y), name, fill=(180, 185, 195))
+
+    # Frame rows
+    for ri, (cam_row, label, col) in enumerate(valid_rows):
+        row_y = header_h + ri * (thumb_h + gap)
+
+        # Label background
+        draw.rectangle([0, row_y, label_w - 2, row_y + thumb_h],
+                       fill=col, outline=col)
+        # Label text
+        if font:
+            bbox = draw.textbbox((0, 0), label, font=font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            draw.text((label_w - 2 - tw - 6, row_y + (thumb_h - th) // 2),
+                      label, fill=(255, 255, 255), font=font)
+        else:
+            draw.text((4, row_y + 30), label, fill=(255, 255, 255))
+
+        # Camera images
+        for ci in range(6):
+            x = label_w + ci * (thumb_w + gap)
+            img = cam_row[ci] if ci < len(cam_row) else None
+            if img is not None:
+                canvas.paste(img, (x, row_y))
+            else:
+                draw.rectangle([x, row_y, x + thumb_w, row_y + thumb_h],
+                               fill=(40, 44, 52))
+
+    # Score the emerged row with a white border
+    emerged_row_idx = None
+    for ri, (_, label, _) in enumerate(valid_rows):
+        if label == 't':
+            emerged_row_idx = ri
+            break
+    if emerged_row_idx is not None:
+        ry = header_h + emerged_row_idx * (thumb_h + gap)
+        for offset in range(2):
+            draw.rectangle(
+                [0 - offset, ry - offset, total_w - 1 + offset, ry + thumb_h + offset],
+                outline=(255, 255, 255), width=1)
+
+    return canvas
 
 
 def build_web_gallery(nusc: NuScenes, events: List[Dict],
@@ -1493,7 +1676,7 @@ def build_web_gallery(nusc: NuScenes, events: List[Dict],
         print("No events to render for the gallery.")
         return
 
-    names, captions, total = [], [], len(hb.events)
+    names, caps, mv_names, total = [], [], [], len(hb.events)
     print(f"  Rendering {total} events to {out_dir} ...")
     print(f"  (first run: ~5-15s/event for 3D ray-casting; cached after)")
     import time as _t
@@ -1509,13 +1692,24 @@ def build_web_gallery(nusc: NuScenes, events: List[Dict],
         cap = (f"{scene['name']} | {lbl} | dist {d:.1f} m | "
                f"osz {ev['n_osz_frames']} | {ev['instance_token'][:12]}")
         names.append(Path(hb.out_path).name)
-        captions.append(cap)
+        caps.append(cap)
+
+        # Multi-view camera image (6 cameras × up to 5 frames)
+        mv_name = ''
+        mv_img = render_multiview_for_event(nusc, ev)
+        if mv_img is not None:
+            mv_name = f'event_{i:04d}_cam.jpg'
+            mv_path = str(Path(out_dir) / mv_name)
+            mv_img.save(mv_path, 'JPEG', quality=85)
+
+        mv_names.append(mv_name)
         elapsed = _t.time() - t0
         eta = elapsed / (i + 1) * (total - i - 1)
         print(f"  [{i + 1:3d}/{total}] {Path(hb.out_path).name}  "
+              f"{'+cam' if mv_name else ''}  "
               f"({elapsed:.0f}s elapsed, ~{eta:.0f}s remaining)")
 
-    _write_gallery_html(out_dir, names, captions)
+    _write_gallery_html(out_dir, names, caps, mv_names)
     html = str(Path(out_dir) / 'index.html')
     print(f"\nGallery ready: {total} events → {html}")
     print("Opening in your default browser...")
@@ -1530,6 +1724,7 @@ def build_web_gallery(nusc: NuScenes, events: List[Dict],
     print(f"           or run  python -m http.server --directory {out_dir} 8080")
     print(f"           and visit http://<server>:8080/")
     print("  • Keys  : ←/→ or ↑/↓ flip; j/k jump ±10; type a number + Go.")
+    print("  • 'm'   : toggle between BEV and multi-view camera images.")
 
 
 if __name__ == '__main__':
